@@ -1,68 +1,81 @@
-"use client";
-
 import Link from "next/link";
-import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Logo } from "./components/Logo";
 import { Constellation } from "./components/Constellation";
 
 export default function HomePage() {
-  const router = useRouter();
-  const [code, setCode] = useState("");
-  const [error, setError] = useState("");
-
-  function login(e: FormEvent) {
-    e.preventDefault();
-    const expected = process.env.NEXT_PUBLIC_ACCESS_CODE || "examiner";
-    if (code.trim().toLowerCase() === expected.toLowerCase()) {
-      sessionStorage.setItem("cybridtech-examiner-ok", "1");
-      router.push("/examine");
-    } else setError("Access code not recognized.");
-  }
-
   return (
-    <div className="wrap">
-      <header className="nav">
-        <Link href="/" className="brand">
-          <Logo height={36} />
+    <main className="site-shell">
+      <header className="site-nav">
+        <Link href="/" className="site-brand" aria-label="CybridTech Examiner home">
+          <Logo height={44} />
         </Link>
-        <nav className="nav-links">
-          <a href="#manifesto">Manifesto</a>
-          <Link href="/examine">Examine</Link>
-          <Link href="/examine" className="pill">Open examiner</Link>
+        <nav className="site-nav-links" aria-label="Primary navigation">
+          <a href="#workflow">Workflow</a>
+          <a href="#review">Review standard</a>
+          <Link className="primary-pill" href="/examine">Open workbench</Link>
         </nav>
       </header>
-      <section className="hero">
-        <div>
-          <p className="kicker">Your packet has the answer</p>
-          <h1>The workplace exam, written back in Vera.</h1>
-          <p className="lede">
-            CybridTech Examiner reads a title report the way a desk examiner does then a second pass argues with the first. One violet action. The rest is void.
+
+      <section className="marketing-hero">
+        <div className="hero-copy">
+          <p className="eyebrow">Title examination, structured</p>
+          <h1>Every title report has an answer. Find it without the scavenger hunt.</h1>
+          <p className="hero-lede">
+            Upload one report or a full packet. CybridTech Examiner extracts the review fields, runs a second-pass critic, and gives your team a clean Vera-style review that is ready to verify and deliver.
           </p>
           <div className="hero-actions">
-            <Link className="pill" href="/examine">Request the bench</Link>
-            <a className="ghost" href="#manifesto">How it moves</a>
+            <Link className="primary-pill" href="/examine">Open the examiner</Link>
+            <a className="text-action" href="#workflow">See how it moves</a>
           </div>
         </div>
-        <Constellation />
+        <div className="hero-visual" aria-hidden="true">
+          <Constellation />
+          <div className="hero-orbit-copy">
+            <span>READ</span>
+            <span>VERIFY</span>
+            <span>DELIVER</span>
+          </div>
+        </div>
       </section>
-      <section className="section" id="manifesto">
-        <p className="kicker">Operating law</p>
-        <h2>Black void. One iris spark. Knowledge as a field.</h2>
-        <p className="muted">
-          Hierarchy comes from scale, not weight. Particles drift because title is a constellation of recordings. The only filled control is the examiner pill.
-        </p>
+
+      <section className="statement-section" id="workflow">
+        <p className="eyebrow">The workflow</p>
+        <div className="statement-grid">
+          <h2>One upload. A complete review path.</h2>
+          <div className="statement-copy">
+            <p>
+              The workbench keeps the source packet, the editable examiner answers, the critic verdict, and the finished client-facing review in one place. Bulk uploads become a queue instead of a pile of browser tabs.
+            </p>
+            <div className="step-list" aria-label="Workflow steps">
+              <span><b>01</b> Upload PDF, text, or a batch</span>
+              <span><b>02</b> Review every extracted response</span>
+              <span><b>03</b> Re-run the critic after corrections</span>
+              <span><b>04</b> Export branded PDF or Word output</span>
+            </div>
+          </div>
+        </div>
       </section>
-      <section className="gate" id="access">
-        <p className="kicker">Firm desk</p>
-        <h2>Enter the bench</h2>
-        <p className="muted">Default access code for this bones build is examiner.</p>
-        <form onSubmit={login}>
-          <input type="password" placeholder="Access code" value={code} onChange={(e) => setCode(e.target.value)} />
-          <button className="pill" type="submit">Continue</button>
-        </form>
-        {error ? <p className="muted" style={{ marginTop: 16, color: "#ffb829" }}>{error}</p> : null}
+
+      <section className="statement-section" id="review">
+        <p className="eyebrow">The review standard</p>
+        <div className="statement-grid reverse">
+          <h2>The machine proposes. The examiner owns the answer.</h2>
+          <div className="statement-copy">
+            <p>
+              Extraction is a first pass, not a permission slip. Each field remains editable, missing information stays visible, and the final Pass or Fail can be re-evaluated after the human review is complete.
+            </p>
+            <p className="quiet-copy">
+              The interface is intentionally sparse: black canvas, one saturated action color, oversized type, and a single procedural constellation. The document itself is the one place the screen becomes white paper.
+            </p>
+          </div>
+        </div>
       </section>
-    </div>
+
+      <section className="closing-section">
+        <p className="eyebrow">CybridTech Examiner</p>
+        <h2>Turn the packet into a professional review.</h2>
+        <Link className="primary-pill" href="/examine">Open workbench</Link>
+      </section>
+    </main>
   );
 }
