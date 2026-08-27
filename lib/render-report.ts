@@ -1,14 +1,33 @@
-import { formatDeed, formatMortgage, VeraExam } from "./vera";
+import { VeraExam } from "./vera";
+
+function evidenceLines(exam: VeraExam, number: number): string[] {
+  const finding = exam.findings.find((item) => item.number === number);
+  if (!finding) return [];
+  const lines = finding.evidence.length
+    ? finding.evidence.map((ev) => `[Evidence: '${ev.quote}' Page ${ev.page}; ${ev.documentType}; ${ev.source}${typeof ev.confidence === "number" ? `; confidence ${(ev.confidence * 100).toFixed(1)}%` : ""}]`)
+    : ["[Evidence: Not Stated]"];
+  if (finding.critical) lines.push(`[Status: ${finding.status === "PASS" || finding.status === "NOT_APPLICABLE" ? "PASS" : "FAIL"}]`, `[Proof/Reason: '${finding.proofReason}']`);
+  return lines;
+}
 
 export function examToPlain(exam: VeraExam): string {
+  const questionLines = exam.findings.flatMap((finding) => [
+    `${finding.number}. ${finding.question}`,
+    `Response: ${finding.response}`,
+    ...evidenceLines(exam, finding.number),
+    finding.commentary ? `Optional Commentary: ${finding.commentary}` : "",
+    "",
+  ]).filter(Boolean);
+
   return [
     "Title Report Review Summary",
-    "",
+    `State: ${exam.state}`,
+    `County: ${exam.county}`,
     `Search Type: ${exam.searchType}`,
     `Client Order#: ${exam.clientOrder}`,
-    `Property Address: ${exam.propertyAddress}`,
-    `Search Effective Date: ${exam.searchEffectiveDate}`,
-    `MIN# (if applicable): ${exam.minNumber}`,
+    `Address: ${exam.propertyAddress}`,
+    `Effective Date: ${exam.searchEffectiveDate}`,
+    `MIN#: ${exam.minNumber}`,
     "",
     "Property & Tax Information",
     `Parcel ID: ${exam.parcelId}`,
@@ -19,45 +38,25 @@ export function examToPlain(exam: VeraExam): string {
     `Mobile Home: ${exam.mobileHome}`,
     `Condo/HOA: ${exam.condoHoa}`,
     "",
-    "Required Question Responses",
-    `Is there an HOA or not applicable? Response: ${exam.hoaPresent}`,
-    `Are there Covenants, Conditions, and Restrictions attached or Not Applicable? Response: ${exam.ccrs}`,
-    `Is the HOA name and amounts listed or Not Applicable? Response: ${exam.hoaNameAmounts}`,
-    `Are the Deed/Mortgage amounts and names accurate? Response: ${exam.deedMortgageAccurate}`,
-    `Deed: ${formatDeed(exam.deed)}`,
-    ...exam.mortgages.map((m) => formatMortgage(m)),
-    `Are all document recordings available and match the report? Response: ${exam.recordingsAvailable}`,
-    `Are recordings in chronological order? Response: ${exam.recordingsChronological}`,
-    `Is assignment vesting accurate or Not Applicable? Response: ${exam.assignmentVesting}`,
-    `Is the legal description confirmed and exact across vesting deed, DOT, and Title Report? Response: ${exam.legalDescriptionConfirmed}`,
-    `Legal Description: ${exam.legalDescription}`,
-    `Is the original beneficiary MERS? Response: ${exam.originalBeneficiaryMers}`,
-    `Is there a Federal Tax Lien or Not Applicable? Response: ${exam.federalTaxLien}`,
-    `Are there any document releases that are showing on the report? Response: ${exam.documentReleases}`,
-    `Is the property secured and does the Property Address match the Deed of Trust? Response: ${exam.propertySecuredAddressMatch}`,
-    `What is the Loan Document type? Response: ${exam.loanDocumentType}`,
-    `What is the Recording Date? Response: ${exam.recordingDate}`,
-    `What is the Loan status, including the notes? Response: ${exam.loanStatus}`,
-    `Recourse? Response: ${exam.recourse}`,
-    `Are there any typos or errors in the report? Response: ${exam.typosOrErrors}`,
-    `Is the plat map labeled? Response: ${exam.platMapLabeled}`,
-    `Is the MIN# in the run sheet? Response: ${exam.minInRunSheet}`,
-    `Is the Run Sheet accurate? Response: ${exam.runSheetAccurate}`,
-    "",
-    "Title Report / Run Sheet Accuracy Audit",
-    `Vesting Deed Information: ${exam.audit.vestingDeed}`,
-    `Chain of Title: ${exam.audit.chainOfTitle}`,
-    `Mortgage Information: ${exam.audit.mortgageInformation}`,
-    `Tax Information: ${exam.audit.taxInformation}`,
-    `Judgments and Liens: ${exam.audit.judgmentsAndLiens}`,
-    `Easements and Restrictions: ${exam.audit.easementsAndRestrictions}`,
+    "Required Questions (1–20)",
+    ...questionLines,
+    "Accuracy Audit",
+    `Vesting Deed Response: ${exam.audit.vestingDeed}`,
+    `Chain of Title Response: ${exam.audit.chainOfTitle}`,
+    `Mortgage Info Response: ${exam.audit.mortgageInformation}`,
+    `Tax Info Response: ${exam.audit.taxInformation}`,
+    `Judgments and Liens Response: ${exam.audit.judgmentsAndLiens}`,
+    `Easements and Restrictions Response: ${exam.audit.easementsAndRestrictions}`,
     "",
     "Pass/Fail Determination",
-    `Status: ${exam.status}`,
+    `Status: ${exam.status.toUpperCase()} (${exam.criticalPassRate}% critical pass rate)`,
     `Reason: ${exam.reason}`,
+    `Confirmation: ${exam.confirmation}`,
+    `Manual Review Required: ${exam.manualReviewRequired ? "YES" : "NO"}`,
     "",
-    "Confirmation:",
-    exam.confirmation,
+    "Extraction Audit Trail",
+    exam.extractionSummary,
+    `Rule Pack: ${exam.rulePackStatus}`,
     "",
     "Notes / Comments",
     exam.notes,
