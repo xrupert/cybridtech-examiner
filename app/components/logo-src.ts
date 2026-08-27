@@ -1,2 +1,1 @@
-export const LOGO_SRC =
-  "PLACEHOLDER";
+export const LOGO_SRC = "";
