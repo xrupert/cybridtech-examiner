@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { VeraExam } from "@/lib/vera";
 import { examToPlain } from "@/lib/render-report";
+import { Logo } from "../components/Logo";
 
 export default function ExaminePage() {
   const [busy, setBusy] = useState(false);
@@ -43,7 +44,7 @@ export default function ExaminePage() {
     <div className="wrap">
       <header className="nav">
         <Link href="/" className="brand">
-          <span className="word">CybridTech Examiner</span>
+          <Logo height={32} />
         </Link>
         <nav className="nav-links">
           <Link href="/">Home</Link>
@@ -64,19 +65,17 @@ export default function ExaminePage() {
             <button className="chip" type="button" onClick={() => run({ fixtureId: "prelim-mock" })}>Load preliminary mock</button>
           </div>
         </div>
-        <textarea placeholder="Or paste report text…" value={pasted} onChange={(e) => setPasted(e.target.value)} />
+        <textarea placeholder="Or paste report text" value={pasted} onChange={(e) => setPasted(e.target.value)} />
         <div className="row">
-          <button className="pill" type="button" disabled={busy || !pasted.trim()} onClick={() => run({ text: pasted })}>{busy ? "Examining…" : "Examine paste"}</button>
+          <button className="pill" type="button" disabled={busy || !pasted.trim()} onClick={() => run({ text: pasted })}>{busy ? "Examining" : "Examine paste"}</button>
         </div>
         {error ? <p className="muted" style={{ color: "#ffb829", marginTop: 16 }}>{error}</p> : null}
       </div>
       {exam ? (
         <article className="section">
           <div className="letterhead">
-            <div>
-              <div className="word">CybridTech Solutions</div>
-              <div className="sub">Title Report Review Summary</div>
-            </div>
+            <Logo height={44} />
+            <div className="sub">Title Report Review Summary</div>
           </div>
           <p className={`tiny ${exam.status === "Pass" ? "status-pass" : "status-fail"}`}>Status {exam.status} — {exam.reason}</p>
           <div className="grid" style={{ marginTop: 36 }}>
