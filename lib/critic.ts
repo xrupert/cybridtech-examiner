@@ -1,51 +1,27 @@
 import { VeraExam } from "./vera";
+import { CRITICAL_QUESTION_NUMBERS } from "./audit-rules";
 
-const MISSING = new Set(["Not Provided", "Not yet examined", ""]);
-
-function missing(v: string): boolean {
-  return MISSING.has(v.trim());
-}
+const acceptable = new Set(["PASS", "NOT_APPLICABLE"]);
 
 export function critique(exam: VeraExam): VeraExam {
-  const issues: string[] = [];
-
-  if (missing(exam.propertyAddress)) issues.push("Property address not extracted");
-  if (missing(exam.parcelId)) issues.push("Parcel / APN missing");
-  if (missing(exam.searchEffectiveDate)) issues.push("Effective / search date missing");
-  if (missing(exam.legalDescription)) issues.push("Legal description missing");
-  if (missing(exam.deed.grantor) && missing(exam.deed.grantee)) issues.push("Vesting deed parties missing");
-  if (exam.typosOrErrors.toLowerCase().includes("mock")) issues.push("Source packet is mock / incomplete by its own legend");
-  if (exam.deed.bookPage === "Not Provided") issues.push("Deed book/page not on packet");
-  if (exam.minNumber === "Not Provided") issues.push("MIN# not on packet");
-  if (exam.loanDocumentType === "Not Provided") issues.push("No DOT / mortgage instrument typed");
-
-  const hardFail =
-    missing(exam.propertyAddress) ||
-    missing(exam.parcelId) ||
-    missing(exam.legalDescription) ||
-    exam.typosOrErrors.toLowerCase().includes("placeholder");
-
-  const status = hardFail ? "Fail" : issues.length > 3 ? "Fail" : "Pass";
-  const reason = hardFail
-    ? issues.slice(0, 4).join("; ") || "Missing key information"
-    : issues.length
-      ? `Extracted with caveats: ${issues.slice(0, 3).join("; ")}`
-      : "All core Vera fields extracted from the packet";
+  const critical = exam.findings.filter((finding) => CRITICAL_QUESTION_NUMBERS.has(finding.number));
+  const passed = critical.filter((finding) => acceptable.has(finding.status)).length;
+  const criticalPassRate = critical.length ? Math.round((passed / critical.length) * 100) : 0;
+  const failed = critical.filter((finding) => !acceptable.has(finding.status));
+  const status = failed.length === 0 && critical.length > 0 ? "Pass" : "Fail";
+  const reasons = failed.slice(0, 6).map((finding) => `Q${finding.number}: ${finding.proofReason}`);
+  const manualReviewRequired = exam.manualReviewRequired || exam.pages.some((page) => page.source === "azure-ocr" && typeof page.confidence === "number" && page.confidence < 0.95);
 
   return {
     ...exam,
     status,
-    reason,
-    confirmation:
-      status === "Fail"
-        ? "The document contains the issues identified above and does not meet quality standards."
-        : "The document meets all quality standards with no identified issues.",
-    notes: [
-      exam.notes,
-      `Critic flags (${issues.length}): ${issues.join(" | ") || "none"}`,
-      "Examiner output is a QA worksheet, not a title insurance policy or legal opinion.",
-    ]
-      .filter(Boolean)
-      .join(" "),
+    criticalPassRate,
+    manualReviewRequired,
+    reason: status === "Pass"
+      ? `All applicable critical questions passed (${criticalPassRate}%).`
+      : reasons.join(" | ") || "Critical evidence requirements remain unresolved.",
+    confirmation: status === "Pass"
+      ? "Meets the currently loaded CybridTech audit rules based only on quoted packet evidence."
+      : "Has unresolved or contradictory critical evidence identified above; do not treat this packet as passing until corrected or verified.",
   };
 }

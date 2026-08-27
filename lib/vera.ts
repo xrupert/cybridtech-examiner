@@ -1,6 +1,45 @@
 export type LoanDocumentType = "Deed of Trust" | "Mortgage" | "Other" | "Not Provided";
 export type LoanStatus = "Active" | "Default" | "Satisfied" | "Not Provided";
 export type PassFail = "Pass" | "Fail";
+export type FindingStatus = "UNDETERMINED" | "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE" | "NOT_STATED";
+export type EvidenceSource = "native" | "azure-ocr" | "pasted";
+
+export interface EvidenceRef {
+  quote: string;
+  page: number;
+  documentType: string;
+  source: EvidenceSource;
+  confidence?: number;
+  instrumentNumber?: string;
+}
+
+export interface AuditFinding {
+  number: number;
+  question: string;
+  critical: boolean;
+  response: string;
+  status: FindingStatus;
+  evidence: EvidenceRef[];
+  proofReason: string;
+  commentary?: string;
+}
+
+export interface PageEvidence {
+  page: number;
+  text: string;
+  source: EvidenceSource;
+  confidence?: number;
+  documentType: string;
+}
+
+export interface PacketDocument {
+  documentType: string;
+  pageStart: number;
+  pageEnd: number;
+  instrumentNumber?: string;
+  recordingDate?: string;
+  excerpt: string;
+}
 
 export interface MortgageRecord {
   index: number;
@@ -22,6 +61,8 @@ export interface DeedRecord {
 }
 
 export interface VeraExam {
+  state: string;
+  county: string;
   searchType: string;
   clientOrder: string;
   propertyAddress: string;
@@ -65,6 +106,13 @@ export interface VeraExam {
     judgmentsAndLiens: string;
     easementsAndRestrictions: string;
   };
+  findings: AuditFinding[];
+  pages: PageEvidence[];
+  documents: PacketDocument[];
+  criticalPassRate: number;
+  manualReviewRequired: boolean;
+  extractionSummary: string;
+  rulePackStatus: string;
   status: PassFail;
   reason: string;
   confirmation: string;
@@ -76,7 +124,9 @@ export interface VeraExam {
 
 export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
   return {
-    searchType: "Not Provided",
+    state: "TX",
+    county: "Not Stated",
+    searchType: "General Search",
     clientOrder: "Not Provided",
     propertyAddress: "Not Provided",
     searchEffectiveDate: "Not Provided",
@@ -92,14 +142,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     ccrs: "Not Provided",
     hoaNameAmounts: "Not Provided",
     deedMortgageAccurate: "Not Provided",
-    deed: {
-      grantor: "Not Provided",
-      grantee: "Not Provided",
-      date: "Not Provided",
-      bookPage: "Not Provided",
-      instrument: "Not Provided",
-      consideration: "Not Provided",
-    },
+    deed: { grantor: "Not Provided", grantee: "Not Provided", date: "Not Provided", bookPage: "Not Provided", instrument: "Not Provided", consideration: "Not Provided" },
     mortgages: [],
     recordingsAvailable: "Not Provided",
     recordingsChronological: "Not Provided",
@@ -118,17 +161,17 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     platMapLabeled: "Not Provided",
     minInRunSheet: "Not Provided",
     runSheetAccurate: "Not Provided",
-    audit: {
-      vestingDeed: "Incomplete",
-      chainOfTitle: "Partial",
-      mortgageInformation: "Incomplete",
-      taxInformation: "Incomplete",
-      judgmentsAndLiens: "None",
-      easementsAndRestrictions: "None",
-    },
+    audit: { vestingDeed: "Incomplete", chainOfTitle: "Incomplete", mortgageInformation: "Incomplete", taxInformation: "Incomplete", judgmentsAndLiens: "Not Stated", easementsAndRestrictions: "Not Stated" },
+    findings: [],
+    pages: [],
+    documents: [],
+    criticalPassRate: 0,
+    manualReviewRequired: false,
+    extractionSummary: "Not yet examined",
+    rulePackStatus: "Recovered owner audit doctrine loaded; authoritative source documents still required for exact search-type/state rule packs.",
     status: "Fail",
     reason: "Not yet examined",
-    confirmation: "The document contains the issues identified above and does not meet quality standards.",
+    confirmation: "The review is not complete.",
     notes: "",
     sourceFile: "upload",
     extractedAt: new Date().toISOString(),
