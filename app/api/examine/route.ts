@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { critique } from "@/lib/critic";
 import { FIXTURES } from "@/lib/fixtures";
 import type { VeraExam } from "@/lib/vera";
-import { isSupportedSearchType } from "@/lib/audit-rules";
+import { AUDIT_RULE_VERSION, isSupportedSearchType } from "@/lib/audit-rules";
 import { analyzePdfWithOpenAI, analyzeTextWithOpenAI, openAIDocumentIntelligenceConfigured, openAIDocumentModel } from "@/lib/openai-document-intelligence";
 import { accessProtectionConfigured, checkExaminerAccess } from "@/lib/examiner-auth";
 import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
@@ -50,13 +50,14 @@ export async function GET() {
     verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
     verificationPasses: 2,
     azureRequired: false,
+    ruleVersion: AUDIT_RULE_VERSION,
     mvp: {
       onePacketPerReview: true,
       supportedSearchTypes: ["Foreclosure", "2nd Lien", "Current Owner Search"],
       veraTemplate: "VERA v3",
       rcsOrderRulesLoaded: true,
-      legalDescriptionProtocolLoaded: false,
-      quickReferenceChecklistLoaded: false,
+      legalDescriptionProtocolLoaded: true,
+      quickReferenceChecklistLoaded: true,
     },
     costPolicy: {
       defaultModel: COST_MODEL,
@@ -74,7 +75,7 @@ export async function POST(req: NextRequest) {
   try {
     applyCostPolicy();
     if (!openAIDocumentIntelligenceConfigured()) {
-      return NextResponse.json({ error: "OpenAI forensic document intelligence is not configured yet. Add OPENAI_API_KEY to the Vercel project environment." }, { status: 503 });
+      return NextResponse.json({ error: "OpenAI forensic document intelligence is not configured yet. Add OPENAI_API_KEY to the Vercel project environment and redeploy Production." }, { status: 503 });
     }
     const access = checkExaminerAccess(req);
     if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
@@ -128,7 +129,10 @@ export async function POST(req: NextRequest) {
       verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
       verificationPasses: 2,
       veraTemplate: "VERA v3",
+      ruleVersion: AUDIT_RULE_VERSION,
       rcsOrderRulesLoaded: true,
+      legalDescriptionProtocolLoaded: true,
+      quickReferenceChecklistLoaded: true,
       costPolicy: "GPT-5.6 Luna only by default; no automatic Terra/Sol escalation.",
     });
   } catch (err) {
