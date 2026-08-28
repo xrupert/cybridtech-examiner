@@ -135,7 +135,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
   return {
     state: "TX",
     county: "Not Stated",
-    searchType: "General Search",
+    searchType: "Foreclosure",
     clientOrder: "Not Provided",
     propertyAddress: "Not Provided",
     searchEffectiveDate: "Not Provided",
@@ -178,7 +178,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     criticalPassRate: 0,
     manualReviewRequired: false,
     extractionSummary: "Not yet examined",
-    rulePackStatus: "Recovered owner audit doctrine loaded; authoritative source documents still required for exact search-type/state rule packs.",
+    rulePackStatus: "VERA v3 + RCS Foreclosure/2nd Lien/Current Owner MVP rules loaded. Quick Reference Checklist and Legal Description Compliance Protocol still pending.",
     status: "Fail",
     reason: "Not yet examined",
     confirmation: "The review is not complete.",
