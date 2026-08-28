@@ -62,6 +62,8 @@ async function openAIFetch(url: string, init: RequestInit): Promise<Response> {
 async function uploadPdf(buffer: ArrayBuffer, filename: string): Promise<string> {
   const form = new FormData();
   form.append("purpose", "user_data");
+  form.append("expires_after[anchor]", "created_at");
+  form.append("expires_after[seconds]", "3600");
   form.append("file", new Blob([buffer], { type: "application/pdf" }), filename);
   const response = await openAIFetch(`${OPENAI_API}/files`, { method: "POST", headers: { Authorization: `Bearer ${apiKey()}` }, body: form });
   const data = await response.json() as { id?: string };
@@ -88,7 +90,7 @@ function extractOutputText(data: unknown): string {
 
 async function responseAudit(args: { fileId?: string; text?: string; context: AuditContext; pass: "primary" | "verification"; model: string }): Promise<RawAudit> {
   const content: Array<Record<string, unknown>> = [{ type: "input_text", text: args.fileId ? "Audit the attached title-report packet." : `Audit this title-report text as Page 1:\n\n${args.text || ""}` }];
-  if (args.fileId) content.push({ type: "input_file", file_id: args.fileId, detail: "auto" });
+  if (args.fileId) content.push({ type: "input_file", file_id: args.fileId });
   const response = await openAIFetch(`${OPENAI_API}/responses`, { method: "POST", headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: args.model, store: false, max_output_tokens: MAX_OUTPUT_TOKENS, reasoning: { effort: "high" }, instructions: doctrinePrompt(args.context, args.pass), input: [{ role: "user", content }], text: { verbosity: "low", format: { type: "json_schema", name: "cybrid_forensic_title_audit", strict: true, schema: auditSchema } } }) });
   const data = await response.json();
   const text = extractOutputText(data);
