@@ -6,7 +6,7 @@ import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const COST_MODEL = "gpt-5.6-luna";
 
@@ -33,6 +33,7 @@ export async function GET() {
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     model: process.env.OPENAI_DOCUMENT_MODEL || COST_MODEL,
     verificationPasses: 2,
+    maxReviewDurationSeconds: maxDuration,
     supportedSearchTypes: ["Foreclosure", "2nd Lien", "Current Owner Search"],
   });
 }
