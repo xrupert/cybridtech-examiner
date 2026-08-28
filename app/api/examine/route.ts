@@ -4,7 +4,7 @@ import { FIXTURES } from "@/lib/fixtures";
 import type { VeraExam } from "@/lib/vera";
 import { AUDIT_RULE_VERSION, isSupportedSearchType } from "@/lib/audit-rules";
 import { analyzePdfWithOpenAI, analyzeTextWithOpenAI, openAIDocumentIntelligenceConfigured, openAIDocumentModel } from "@/lib/openai-document-intelligence";
-import { accessProtectionConfigured, checkExaminerAccess } from "@/lib/examiner-auth";
+import { accessProtectionConfigured, checkExaminerAccess, examinerAuthenticationMode } from "@/lib/examiner-auth";
 import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
 
 export const runtime = "nodejs";
@@ -47,12 +47,22 @@ async function examineFile(file: File, state: string, searchType: string): Promi
   return critique(await analyzeTextWithOpenAI(text, context));
 }
 
+function reviewedPageCount(exam: VeraExam): number {
+  return Math.max(
+    0,
+    ...exam.pages.map((page) => page.page || 0),
+    ...exam.documents.map((document) => document.pageEnd || 0),
+  );
+}
+
 export async function GET() {
   applyOpenAIKeyAlias();
   return NextResponse.json({
+    product: "Cybrid Title",
     engine: "openai-multimodal-forensic",
     openAIConfigured: openAIDocumentIntelligenceConfigured(),
     openAIKeyAliasAccepted: Boolean(process.env.OPEN_AI_KEY),
+    authenticationMode: examinerAuthenticationMode(),
     accessProtectionConfigured: accessProtectionConfigured(),
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     documentModel: openAIDocumentModel(),
@@ -130,10 +140,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unsupported request format." }, { status: 415 });
     }
 
+    const usage = {
+      reviews: 1,
+      pdfs: exam.sourceFile.toLowerCase().endsWith(".pdf") ? 1 : 0,
+      pages: reviewedPageCount(exam),
+      model: openAIDocumentModel(),
+      verificationPasses: 2,
+    };
+    console.info("CYBRID_TITLE_USAGE", JSON.stringify({ mode: "review", ...usage, state: exam.state, searchType: exam.searchType }));
+
     return NextResponse.json({
       exam,
       exams: [exam],
       count: 1,
+      usage,
       openAIConfigured: true,
       documentModel: openAIDocumentModel(),
       verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
