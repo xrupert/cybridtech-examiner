@@ -13,6 +13,12 @@ export const maxDuration = 300;
 const COST_MODEL = "gpt-5.6-luna";
 const DEFAULT_SEARCH_TYPE = "Foreclosure";
 
+function applyOpenAIKeyAlias() {
+  if (!process.env.OPENAI_API_KEY && process.env.OPEN_AI_KEY) {
+    process.env.OPENAI_API_KEY = process.env.OPEN_AI_KEY;
+  }
+}
+
 function applyCostPolicy() {
   const allowPremium = process.env.OPENAI_ALLOW_PREMIUM_MODEL === "true";
   const documentModel = process.env.OPENAI_DOCUMENT_MODEL;
@@ -21,6 +27,7 @@ function applyCostPolicy() {
   if (!verifyModel || (!allowPremium && verifyModel !== COST_MODEL)) process.env.OPENAI_VERIFY_MODEL = COST_MODEL;
 }
 
+applyOpenAIKeyAlias();
 applyCostPolicy();
 
 function auditContext(state: string, searchType: string, sourceFile: string) {
@@ -41,9 +48,11 @@ async function examineFile(file: File, state: string, searchType: string): Promi
 }
 
 export async function GET() {
+  applyOpenAIKeyAlias();
   return NextResponse.json({
     engine: "openai-multimodal-forensic",
     openAIConfigured: openAIDocumentIntelligenceConfigured(),
+    openAIKeyAliasAccepted: Boolean(process.env.OPEN_AI_KEY),
     accessProtectionConfigured: accessProtectionConfigured(),
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     documentModel: openAIDocumentModel(),
@@ -73,9 +82,10 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   let cleanupPathnames: string[] = [];
   try {
+    applyOpenAIKeyAlias();
     applyCostPolicy();
     if (!openAIDocumentIntelligenceConfigured()) {
-      return NextResponse.json({ error: "OpenAI forensic document intelligence is not configured yet. Add OPENAI_API_KEY to the Vercel project environment and redeploy Production." }, { status: 503 });
+      return NextResponse.json({ error: "OpenAI forensic document intelligence is not configured yet. Configure OPEN_AI_KEY or OPENAI_API_KEY in the Vercel project environment and redeploy Production." }, { status: 503 });
     }
     const access = checkExaminerAccess(req);
     if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
