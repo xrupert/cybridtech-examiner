@@ -9,7 +9,7 @@ import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const COST_MODEL = "gpt-5.6-luna";
 const DEFAULT_SEARCH_TYPE = "Foreclosure";
@@ -69,6 +69,7 @@ export async function GET() {
     documentModel: openAIDocumentModel(),
     verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
     verificationPasses: 2,
+    maxReviewDurationSeconds: maxDuration,
     azureRequired: false,
     ruleVersion: AUDIT_RULE_VERSION,
     mvp: {
