@@ -1,64 +1,110 @@
 # CybridTech Examiner
 
-Evidence-first forensic review workbench for non-insured title reports.
+Evidence-first non-insured title workbench with two directions built on one source-preserving document engine.
 
-## Current engine
+## MVP modes
 
-The production architecture uses the OpenAI Responses API directly for PDF and text review. PDFs are uploaded to OpenAI as temporary `user_data` files, analyzed multimodally (document text + page images), reviewed twice independently, reconciled conservatively, and then deleted from OpenAI after the audit request completes.
+### 1. Review Existing Title Report
 
-Core behavior:
+One complete title-report / Run Sheet packet goes in. The Examiner reads the packet multimodally, applies the loaded VERA v3 structure and selected RCS order-type requirements, runs two independent passes, enforces evidence server-side, and presents the findings for human approval, override, or needs-review disposition.
 
-- OpenAI multimodal PDF reading for native-text and scanned/image pages
-- GPT-5.6 Luna by default (`gpt-5.6-luna`) for high-volume cost control
-- two independent Luna audit passes; status disagreements become `CANNOT_CONFIRM`
-- no automatic Terra or Sol escalation
-- premium model overrides are blocked unless `OPENAI_ALLOW_PREMIUM_MODEL=true` is explicitly set
-- exact quote + physical PDF page evidence for every supported finding
-- 20 VERA audit questions with critical Q4–12 and Q17–20 driving the overall verdict
-- no-assumption / evidence-first CybridTech audit doctrine
-- MERS/MIN, HOA, legal-description, and bidirectional Run Sheet ↔ packet checks
-- page/document inventory and extraction audit trail
-- manual-review escalation when evidence is ambiguous or independent passes disagree
-- branded CybridTech PDF/Word output with evidence attached
-- batch upload, state, and search-type context
+Output:
 
-## Required environment
+- VERA v3 review structure
+- exact quote + physical PDF page evidence
+- critical Q4–Q12 and Q17–Q20 verdict logic
+- examiner decisions preserved separately from the AI finding
+- genuine `.docx` export plus printable PDF view
 
-Set this in Vercel (and `.env.local` for local development):
+### 2. Build Run Sheet From Documents
 
-```bash
-OPENAI_API_KEY=...
-```
+One or more recorded title documents go in. The Examiner classifies each supplied document, extracts recording facts with source evidence, builds Run Sheet rows, then independently rereads the entire packet and reconciles the two builds.
 
-The production code forces the low-cost defaults unless premium use is explicitly unlocked:
+Output:
+
+- evidence-backed Run Sheet rows
+- `VERIFIED` or `REVIEW` state per row
+- editable extracted values
+- selected RCS requirements that still require examiner review
+- CSV export
+
+The exact customer/RCS production Run Sheet column mapping can be substituted once a representative production sheet is supplied; the evidence model and verification flow remain the same.
+
+## Supported MVP search types
+
+The current authoritative RCS source supplied by the owner is encoded for:
+
+- Foreclosure
+- 2nd Lien
+- Current Owner Search
+
+`2nd Lien Limited` is intentionally not treated as a VERA report because the supplied RCS instructions specify a spreadsheet workflow. Elite requirements supplied so far are Tennessee-specific and are not presented as a universal search type.
+
+## Evidence rules
+
+- no assumptions or inferred negatives
+- every supported PASS or FAIL must carry usable quoted packet evidence and a physical page
+- referenced but unavailable comparison documents become `CANNOT_CONFIRM`
+- MERS + MIN does not create an assignment requirement by itself
+- HOA requirements depend on reference/applicability and selected RCS order type
+- Run Sheet review is bidirectional: Run Sheet → packet and packet → Run Sheet
+- independent-pass disagreements require review rather than silent resolution
+- human overrides do not overwrite the original AI finding
+
+The server, not merely the model prompt, rejects supported PASS/FAIL findings that lack usable evidence.
+
+## Model and cost policy
+
+OpenAI is the document-reading and reasoning provider. Azure Document Intelligence is not required.
+
+The normal path uses:
 
 ```bash
 OPENAI_DOCUMENT_MODEL=gpt-5.6-luna
 OPENAI_VERIFY_MODEL=gpt-5.6-luna
 ```
 
-Optional premium override, disabled by default:
+The API forces GPT-5.6 Luna unless premium use is deliberately unlocked with:
 
 ```bash
 OPENAI_ALLOW_PREMIUM_MODEL=true
 ```
 
-Only enable that intentionally after changing `OPENAI_DOCUMENT_MODEL` / `OPENAI_VERIFY_MODEL`. The normal production path does not call Terra or Sol automatically.
+There is no automatic Terra/Sol escalation.
 
-See `docs/COST_POLICY.md` for the cost guardrails.
+## Required production environment
 
-No Azure Document Intelligence resource is required.
+```bash
+OPENAI_API_KEY=...
+EXAMINER_ACCESS_CODE=...
+```
 
-## Rule-pack status
+`EXAMINER_ACCESS_CODE` is checked server-side before any paid AI processing or VERA DOCX export. This prevents a public deployment from becoming an unauthenticated OpenAI-spend endpoint.
 
-The recovered owner audit doctrine is encoded in `lib/audit-rules.ts`. The following authoritative source files are still required before the app can claim exact RCS/search-type/state rule parity:
+### Large title packets
+
+Vercel Functions have a request-body limit that is too small for many real title packets. For production-sized PDFs, create a **private Vercel Blob store** for the project. Vercel then supplies:
+
+```bash
+BLOB_READ_WRITE_TOKEN=...
+```
+
+The browser uploads large title packets directly to the private Blob store, the server reads the private object for processing, and the temporary Blob object is deleted after ingestion. Small files can still use the direct request path.
+
+## Authoritative rule-pack status
+
+Loaded:
+
+- VERA Template v3 supplied by the owner
+- RCS Title Search Requirements by order type supplied by the owner
+- recovered owner no-assumption/evidence audit doctrine
+
+Still pending and therefore **not invented in code**:
 
 - `Title Report Forensic Audit – Quick Reference Checklist.docx`
-- `VERA_Template_v3.3.docx`
 - `Title Report Legal Description Compliance Protocol.docx`
-- `RCS Title General Search Requirements by order type.pdf`
 
-Until those source documents are loaded, the app must not invent state mandates or missing RCS requirements.
+Until the Legal Description Compliance Protocol is supplied, the app performs documentary legal-description comparisons but does not invent additional geometry or state-law rules.
 
 ## Local
 
