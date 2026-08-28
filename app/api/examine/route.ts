@@ -7,6 +7,7 @@ import { analyzePdfWithOpenAI, analyzeTextWithOpenAI, openAIDocumentIntelligence
 import { accessProtectionConfigured, checkExaminerAccess, examinerAuthenticationMode } from "@/lib/examiner-auth";
 import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
+import { recordCompletedReview } from "@/lib/review-history";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -15,9 +16,7 @@ const REVIEW_MODEL = process.env.OPENAI_REVIEW_MODEL || "gpt-5.6-sol";
 const DEFAULT_SEARCH_TYPE = "Foreclosure";
 
 function applyOpenAIKeyAlias() {
-  if (!process.env.OPENAI_API_KEY && process.env.OPEN_AI_KEY) {
-    process.env.OPENAI_API_KEY = process.env.OPEN_AI_KEY;
-  }
+  if (!process.env.OPENAI_API_KEY && process.env.OPEN_AI_KEY) process.env.OPENAI_API_KEY = process.env.OPEN_AI_KEY;
 }
 
 function applyReviewPolicy() {
@@ -29,9 +28,7 @@ applyReviewPolicy();
 
 function auditContext(state: string, searchType: string, sourceFile: string) {
   const normalizedSearchType = searchType.trim() || DEFAULT_SEARCH_TYPE;
-  if (!isSupportedSearchType(normalizedSearchType)) {
-    throw new Error(`Unsupported MVP search type: ${normalizedSearchType}. Use Foreclosure, 2nd Lien, or Current Owner Search.`);
-  }
+  if (!isSupportedSearchType(normalizedSearchType)) throw new Error(`Unsupported MVP search type: ${normalizedSearchType}. Use Foreclosure, 2nd Lien, or Current Owner Search.`);
   return { state: state.trim().toUpperCase() || "TX", searchType: normalizedSearchType, sourceFile };
 }
 
@@ -45,11 +42,8 @@ async function examineFile(file: File, state: string, searchType: string): Promi
 }
 
 function reviewedPageCount(exam: VeraExam): number {
-  return Math.max(
-    0,
-    ...exam.pages.map((page) => page.page || 0),
-    ...exam.documents.map((document) => document.pageEnd || 0),
-  );
+  if (exam.packetPageCount > 0) return exam.packetPageCount;
+  return Math.max(0, ...exam.pages.map((page) => page.page || 0), ...exam.documents.map((document) => document.pageEnd || 0));
 }
 
 export async function GET() {
@@ -57,7 +51,7 @@ export async function GET() {
   applyReviewPolicy();
   return NextResponse.json({
     product: "Cybrid Title",
-    engine: "openai-multimodal-forensic",
+    engine: "cybrid-title-document-engine-v1",
     openAIConfigured: openAIDocumentIntelligenceConfigured(),
     openAIKeyAliasAccepted: Boolean(process.env.OPEN_AI_KEY),
     authenticationMode: examinerAuthenticationMode(),
@@ -69,6 +63,15 @@ export async function GET() {
     maxReviewDurationSeconds: maxDuration,
     azureRequired: false,
     ruleVersion: AUDIT_RULE_VERSION,
+    documentEngine: {
+      packetIdentity: "sha256-exact-bytes",
+      extractionCache: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+      nativePdfTextFirst: true,
+      scannedPdfFallback: "openai-pdf-vision",
+      physicalPageMarkers: true,
+      repeatPropertyPolicy: "new packet bytes always create a new packet identity; matching order/address/parcel only links related reviews",
+      reviewReceipts: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+    },
     mvp: {
       onePacketPerReview: true,
       supportedSearchTypes: ["Foreclosure", "2nd Lien", "Current Owner Search"],
@@ -81,7 +84,7 @@ export async function GET() {
       defaultModel: REVIEW_MODEL,
       fullPacketModelPasses: 1,
       deterministicCritic: true,
-      goal: "fast full-packet review without duplicate PDF token bursts",
+      goal: "extract once, preserve page evidence, review fast, never reuse stale property content",
     },
   });
 }
@@ -92,11 +95,7 @@ export async function POST(req: NextRequest) {
     applyOpenAIKeyAlias();
     applyReviewPolicy();
     if (!openAIDocumentIntelligenceConfigured()) {
-      return NextResponse.json({
-        code: "OPENAI_NOT_CONFIGURED",
-        error: "OpenAI document review is not configured yet. Configure OPEN_AI_KEY or OPENAI_API_KEY and redeploy Production.",
-        retryable: true,
-      }, { status: 503 });
+      return NextResponse.json({ code: "OPENAI_NOT_CONFIGURED", error: "OpenAI document review is not configured yet. Configure OPEN_AI_KEY or OPENAI_API_KEY and redeploy Production.", retryable: true }, { status: 503 });
     }
 
     const access = checkExaminerAccess(req);
@@ -114,14 +113,7 @@ export async function POST(req: NextRequest) {
       if (files.length > 1) return NextResponse.json({ code: "TOO_MANY_FILES", error: "The VERA review accepts one complete title-report packet at a time." }, { status: 400 });
       exam = await examineFile(files[0], state, searchType);
     } else if (ctype.includes("application/json")) {
-      const body = (await req.json()) as {
-        fixtureId?: string;
-        text?: string;
-        sourceFile?: string;
-        state?: string;
-        searchType?: string;
-        blobPathnames?: string[];
-      };
+      const body = (await req.json()) as { fixtureId?: string; text?: string; sourceFile?: string; state?: string; searchType?: string; blobPathnames?: string[] };
       const state = body.state || "TX";
       const searchType = body.searchType || DEFAULT_SEARCH_TYPE;
       if (body.blobPathnames?.length) {
@@ -142,6 +134,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ code: "UNSUPPORTED_REQUEST", error: "Unsupported request format." }, { status: 415 });
     }
 
+    exam = await recordCompletedReview(exam, openAIDocumentModel());
+
     const usage = {
       reviews: 1,
       pdfs: exam.sourceFile.toLowerCase().endsWith(".pdf") ? 1 : 0,
@@ -149,6 +143,13 @@ export async function POST(req: NextRequest) {
       model: openAIDocumentModel(),
       modelPasses: 1,
       verificationMode: "deterministic-server-evidence-gate",
+      extractionMode: exam.documentEngine.extractionMode,
+      extractionCacheHit: exam.documentEngine.extractionCacheHit,
+      packetHash: exam.packetHash,
+      reviewId: exam.reviewId,
+      matterRevision: exam.matterRevision,
+      extractionMs: exam.documentEngine.extractionMs,
+      modelMs: exam.documentEngine.modelMs,
     };
     console.info("CYBRID_TITLE_USAGE", JSON.stringify({ mode: "review", ...usage, state: exam.state, searchType: exam.searchType }));
 
@@ -166,7 +167,7 @@ export async function POST(req: NextRequest) {
       rcsOrderRulesLoaded: true,
       legalDescriptionProtocolLoaded: true,
       quickReferenceChecklistLoaded: true,
-      reviewPolicy: "One full-packet GPT-5.6 Sol pass plus deterministic evidence/structure critic; no duplicate full-PDF model pass.",
+      reviewPolicy: "Document Engine v1 extracts/caches exact packets by SHA-256, then runs one Sol audit plus deterministic evidence/structure validation.",
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Examine failed";
@@ -175,14 +176,8 @@ export async function POST(req: NextRequest) {
       console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ mode: "review", code: providerFailure.code, message: message.slice(0, 600) }));
       return NextResponse.json(providerFailure, { status: providerFailure.status });
     }
-
     const status = message.startsWith("Unsupported MVP search type:") ? 400 : 500;
-    return NextResponse.json({
-      code: status === 400 ? "UNSUPPORTED_SEARCH_TYPE" : "REVIEW_FAILED",
-      error: message,
-      retryable: status !== 400,
-      openAIConfigured: openAIDocumentIntelligenceConfigured(),
-    }, { status });
+    return NextResponse.json({ code: status === 400 ? "UNSUPPORTED_SEARCH_TYPE" : "REVIEW_FAILED", error: message, retryable: status !== 400, openAIConfigured: openAIDocumentIntelligenceConfigured() }, { status });
   } finally {
     await deletePrivateBlobs(cleanupPathnames);
   }
