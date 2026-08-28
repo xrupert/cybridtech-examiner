@@ -9,6 +9,7 @@ export interface EvidenceRef {
   page: number;
   documentType: string;
   source: EvidenceSource;
+  sourceFile?: string;
   confidence?: number;
   instrumentNumber?: string;
 }
