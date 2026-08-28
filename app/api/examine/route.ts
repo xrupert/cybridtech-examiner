@@ -11,6 +11,16 @@ function auditContext(state: string, searchType: string, sourceFile: string) {
   return { state: state.trim().toUpperCase() || "TX", searchType: searchType.trim() || "General Search", sourceFile };
 }
 
+export async function GET() {
+  return NextResponse.json({
+    engine: "openai-multimodal-forensic",
+    openAIConfigured: openAIDocumentIntelligenceConfigured(),
+    documentModel: openAIDocumentModel(),
+    verificationPasses: 2,
+    azureRequired: false,
+  });
+}
+
 export async function POST(req: NextRequest) {
   try {
     if (!openAIDocumentIntelligenceConfigured()) {
