@@ -3,6 +3,7 @@ import { isSupportedSearchType } from "@/lib/audit-rules";
 import { buildRunSheetWithOpenAI } from "@/lib/openai-run-sheet";
 import { accessProtectionConfigured, checkExaminerAccess } from "@/lib/examiner-auth";
 import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
+import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -42,10 +43,15 @@ export async function POST(request: NextRequest) {
     applyOpenAIKeyAlias();
     applyCostPolicy();
     if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json({ error: "OpenAI is not configured yet. Configure OPEN_AI_KEY or OPENAI_API_KEY in the Vercel project environment." }, { status: 503 });
+      return NextResponse.json({
+        code: "OPENAI_NOT_CONFIGURED",
+        error: "OpenAI document review is not configured yet. Configure OPEN_AI_KEY or OPENAI_API_KEY.",
+        retryable: true,
+      }, { status: 503 });
     }
+
     const access = checkExaminerAccess(request);
-    if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
+    if (!access.ok) return NextResponse.json({ code: "AUTH_REQUIRED", error: access.error, retryable: false }, { status: access.status });
 
     const contentType = request.headers.get("content-type") || "";
     let files: File[] = [];
@@ -62,15 +68,15 @@ export async function POST(request: NextRequest) {
       cleanupPathnames = body.blobPathnames || [];
       state = String(body.state || "TX").trim().toUpperCase() || "TX";
       searchType = String(body.searchType || "Foreclosure").trim();
-      if (!cleanupPathnames.length) return NextResponse.json({ error: "Provide uploaded title-document pathnames." }, { status: 400 });
+      if (!cleanupPathnames.length) return NextResponse.json({ code: "NO_INPUT", error: "Provide uploaded title-document pathnames." }, { status: 400 });
       files = await filesFromPrivateBlobs(cleanupPathnames);
     } else {
-      return NextResponse.json({ error: "Upload title documents or provide private upload pathnames." }, { status: 415 });
+      return NextResponse.json({ code: "UNSUPPORTED_REQUEST", error: "Upload title documents or provide private upload pathnames." }, { status: 415 });
     }
 
-    if (!isSupportedSearchType(searchType)) return NextResponse.json({ error: `Unsupported MVP search type: ${searchType}.` }, { status: 400 });
-    if (!files.length) return NextResponse.json({ error: "Upload at least one title document." }, { status: 400 });
-    if (files.some((file) => !/\.(pdf|txt|md)$/i.test(file.name))) return NextResponse.json({ error: "The MVP accepts PDF, TXT, and MD title documents." }, { status: 400 });
+    if (!isSupportedSearchType(searchType)) return NextResponse.json({ code: "UNSUPPORTED_SEARCH_TYPE", error: `Unsupported MVP search type: ${searchType}.` }, { status: 400 });
+    if (!files.length) return NextResponse.json({ code: "NO_FILE", error: "Upload at least one title document." }, { status: 400 });
+    if (files.some((file) => !/\.(pdf|txt|md)$/i.test(file.name))) return NextResponse.json({ code: "UNSUPPORTED_FILE", error: "Cybrid Title accepts PDF, TXT, and MD title documents." }, { status: 400 });
 
     const build = await buildRunSheetWithOpenAI(files, { state, searchType });
     return NextResponse.json({
@@ -81,7 +87,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Run Sheet build failed.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const providerFailure = classifyOpenAIProviderFailure(message);
+    if (providerFailure) return NextResponse.json(providerFailure, { status: providerFailure.status });
+    return NextResponse.json({ code: "RUN_SHEET_FAILED", error: message, retryable: true }, { status: 500 });
   } finally {
     await deletePrivateBlobs(cleanupPathnames);
   }
