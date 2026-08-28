@@ -7,6 +7,23 @@ import { analyzePdfWithOpenAI, analyzeTextWithOpenAI, openAIDocumentIntelligence
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+const COST_MODEL = "gpt-5.6-luna";
+
+function applyCostPolicy() {
+  const allowPremium = process.env.OPENAI_ALLOW_PREMIUM_MODEL === "true";
+  const documentModel = process.env.OPENAI_DOCUMENT_MODEL;
+  const verifyModel = process.env.OPENAI_VERIFY_MODEL;
+
+  if (!documentModel || (!allowPremium && documentModel !== COST_MODEL)) {
+    process.env.OPENAI_DOCUMENT_MODEL = COST_MODEL;
+  }
+  if (!verifyModel || (!allowPremium && verifyModel !== COST_MODEL)) {
+    process.env.OPENAI_VERIFY_MODEL = COST_MODEL;
+  }
+}
+
+applyCostPolicy();
+
 function auditContext(state: string, searchType: string, sourceFile: string) {
   return { state: state.trim().toUpperCase() || "TX", searchType: searchType.trim() || "General Search", sourceFile };
 }
@@ -16,13 +33,23 @@ export async function GET() {
     engine: "openai-multimodal-forensic",
     openAIConfigured: openAIDocumentIntelligenceConfigured(),
     documentModel: openAIDocumentModel(),
+    verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
     verificationPasses: 2,
     azureRequired: false,
+    costPolicy: {
+      defaultModel: COST_MODEL,
+      premiumModelsBlocked: process.env.OPENAI_ALLOW_PREMIUM_MODEL !== "true",
+      automaticPremiumEscalation: false,
+      inputUsdPerMillionTokens: 0.20,
+      outputUsdPerMillionTokens: 1.20,
+      longContextThresholdTokens: 272000,
+    },
   });
 }
 
 export async function POST(req: NextRequest) {
   try {
+    applyCostPolicy();
     if (!openAIDocumentIntelligenceConfigured()) {
       return NextResponse.json({
         error: "OpenAI forensic document intelligence is not configured yet. Add OPENAI_API_KEY to the Vercel project environment.",
@@ -73,7 +100,9 @@ export async function POST(req: NextRequest) {
       count: exams.length,
       openAIConfigured: true,
       documentModel: openAIDocumentModel(),
+      verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
       verificationPasses: 2,
+      costPolicy: "GPT-5.6 Luna only by default; no automatic Terra/Sol escalation.",
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Examine failed";
