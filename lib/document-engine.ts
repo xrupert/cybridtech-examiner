@@ -37,7 +37,7 @@ export interface PreparedPacket {
 const CACHE_PREFIX = "cybrid-title/extraction-ledgers";
 const MIN_PAGE_CHARS = 80;
 const MIN_PACKET_CHARS = 2000;
-const MIN_NATIVE_COVERAGE = 0.72;
+const MIN_NATIVE_COVERAGE = 0.90;
 
 export function hashPacket(buffer: ArrayBuffer): string {
   return createHash("sha256").update(Buffer.from(buffer)).digest("hex");
@@ -99,7 +99,6 @@ async function extractNativePdfText(buffer: ArrayBuffer, sourceFile: string, pac
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
     useWorkerFetch: false,
-    isEvalSupported: false,
   });
   const pdf = await loadingTask.promise;
   const pages: ExtractedPage[] = [];
@@ -161,12 +160,7 @@ export async function preparePdfPacket(buffer: ArrayBuffer, sourceFile: string):
   const packetHash = hashPacket(buffer);
   const cached = await loadCachedLedger(packetHash);
   if (cached) {
-    console.info("CYBRID_TITLE_EXTRACTION_CACHE_HIT", JSON.stringify({
-      packetHash,
-      sourceFile,
-      pageCount: cached.pageCount,
-      textCoverage: cached.textCoverage,
-    }));
+    console.info("CYBRID_TITLE_EXTRACTION_CACHE_HIT", JSON.stringify({ packetHash, sourceFile, pageCount: cached.pageCount, textCoverage: cached.textCoverage }));
     return {
       packetHash,
       ledger: cached,
@@ -181,11 +175,7 @@ export async function preparePdfPacket(buffer: ArrayBuffer, sourceFile: string):
   try {
     ledger = await extractNativePdfText(buffer, sourceFile, packetHash);
   } catch (error) {
-    console.warn("CYBRID_TITLE_NATIVE_EXTRACTION_FAILED", JSON.stringify({
-      packetHash,
-      sourceFile,
-      message: error instanceof Error ? error.message : "unknown",
-    }));
+    console.warn("CYBRID_TITLE_NATIVE_EXTRACTION_FAILED", JSON.stringify({ packetHash, sourceFile, message: error instanceof Error ? error.message : "unknown" }));
     ledger = {
       version: 1,
       packetHash,
@@ -203,16 +193,7 @@ export async function preparePdfPacket(buffer: ArrayBuffer, sourceFile: string):
 
   await saveLedger(ledger);
   const extractionMode: ExtractionMode = ledger.nativeTextReady ? "native-text" : "openai-pdf-fallback";
-  console.info("CYBRID_TITLE_EXTRACTION_COMPLETE", JSON.stringify({
-    packetHash,
-    sourceFile,
-    pageCount: ledger.pageCount,
-    totalCharacters: ledger.totalCharacters,
-    textCoverage: Number(ledger.textCoverage.toFixed(3)),
-    lowTextPages: ledger.lowTextPages.length,
-    extractionMode,
-    ms: Date.now() - started,
-  }));
+  console.info("CYBRID_TITLE_EXTRACTION_COMPLETE", JSON.stringify({ packetHash, sourceFile, pageCount: ledger.pageCount, totalCharacters: ledger.totalCharacters, textCoverage: Number(ledger.textCoverage.toFixed(3)), lowTextPages: ledger.lowTextPages.length, extractionMode, ms: Date.now() - started }));
 
   return {
     packetHash,
