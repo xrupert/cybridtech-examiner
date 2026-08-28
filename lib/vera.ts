@@ -2,7 +2,7 @@ export type LoanDocumentType = "Deed of Trust" | "Mortgage" | "Other" | "Not Pro
 export type LoanStatus = "Active" | "Default" | "Satisfied" | "Not Provided";
 export type PassFail = "Pass" | "Fail";
 export type FindingStatus = "UNDETERMINED" | "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE" | "NOT_STATED";
-export type EvidenceSource = "native" | "azure-ocr" | "pasted";
+export type EvidenceSource = "native" | "openai-file" | "pasted";
 
 export interface EvidenceRef {
   quote: string;
@@ -11,6 +11,14 @@ export interface EvidenceRef {
   source: EvidenceSource;
   confidence?: number;
   instrumentNumber?: string;
+}
+
+export interface FieldEvidence {
+  field: string;
+  value: string;
+  status: FindingStatus;
+  evidence: EvidenceRef[];
+  proofReason: string;
 }
 
 export interface AuditFinding {
@@ -106,6 +114,7 @@ export interface VeraExam {
     judgmentsAndLiens: string;
     easementsAndRestrictions: string;
   };
+  summaryEvidence: FieldEvidence[];
   findings: AuditFinding[];
   pages: PageEvidence[];
   documents: PacketDocument[];
@@ -162,6 +171,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     minInRunSheet: "Not Provided",
     runSheetAccurate: "Not Provided",
     audit: { vestingDeed: "Incomplete", chainOfTitle: "Incomplete", mortgageInformation: "Incomplete", taxInformation: "Incomplete", judgmentsAndLiens: "Not Stated", easementsAndRestrictions: "Not Stated" },
+    summaryEvidence: [],
     findings: [],
     pages: [],
     documents: [],
