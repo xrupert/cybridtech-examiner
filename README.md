@@ -42,6 +42,7 @@ The current authoritative RCS source supplied by the owner is encoded for:
 
 ## Evidence rules
 
+- reset context for each packet; use only supplied evidence and loaded rules
 - no assumptions or inferred negatives
 - every supported PASS or FAIL must carry usable quoted packet evidence and a physical page
 - referenced but unavailable comparison documents become `CANNOT_CONFIRM`
@@ -50,8 +51,23 @@ The current authoritative RCS source supplied by the owner is encoded for:
 - Run Sheet review is bidirectional: Run Sheet → packet and packet → Run Sheet
 - independent-pass disagreements require review rather than silent resolution
 - human overrides do not overwrite the original AI finding
+- Q4–Q12 and Q17–Q20 are the critical verdict questions
 
 The server, not merely the model prompt, rejects supported PASS/FAIL findings that lack usable evidence.
+
+## Legal Description Compliance Protocol
+
+The owner-supplied protocol is loaded and applies whenever legal-description validation is required. It requires the Examiner to:
+
+- parse and preserve every metes-and-bounds THENCE call
+- preserve directions, degrees, minutes, seconds, distances, punctuation, decimal notation, and standard symbols
+- compare referenced source instruments line-by-line and word-for-word when an instrument number is cited
+- identify omitted or altered calls, landmarks, bearings, directions, and measurements
+- verify call sequence and logical return to the Place of Beginning
+- classify material, formatting, and typographical discrepancies
+- use `CANNOT_CONFIRM` when a required referenced source instrument cannot be inspected
+
+The system does not invent state mandates. When a checklist item depends on state law and no authoritative state rule has been loaded for that issue, the dependency is left for manual verification rather than converted to an unsupported PASS/FAIL.
 
 ## Model and cost policy
 
@@ -98,13 +114,10 @@ Loaded:
 - VERA Template v3 supplied by the owner
 - RCS Title Search Requirements by order type supplied by the owner
 - recovered owner no-assumption/evidence audit doctrine
-
-Still pending and therefore **not invented in code**:
-
 - `Title Report Forensic Audit – Quick Reference Checklist.docx`
 - `Title Report Legal Description Compliance Protocol.docx`
 
-Until the Legal Description Compliance Protocol is supplied, the app performs documentary legal-description comparisons but does not invent additional geometry or state-law rules.
+The loaded rule version is `CYBRID-VERA3-RCS-QRC-LDP-2026-08-28`.
 
 ## Local
 
