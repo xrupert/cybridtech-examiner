@@ -11,7 +11,7 @@ import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 export const runtime = "nodejs";
 export const maxDuration = 800;
 
-const COST_MODEL = "gpt-5.6-luna";
+const REVIEW_MODEL = process.env.OPENAI_REVIEW_MODEL || "gpt-5.6-sol";
 const DEFAULT_SEARCH_TYPE = "Foreclosure";
 
 function applyOpenAIKeyAlias() {
@@ -20,16 +20,12 @@ function applyOpenAIKeyAlias() {
   }
 }
 
-function applyCostPolicy() {
-  const allowPremium = process.env.OPENAI_ALLOW_PREMIUM_MODEL === "true";
-  const documentModel = process.env.OPENAI_DOCUMENT_MODEL;
-  const verifyModel = process.env.OPENAI_VERIFY_MODEL;
-  if (!documentModel || (!allowPremium && documentModel !== COST_MODEL)) process.env.OPENAI_DOCUMENT_MODEL = COST_MODEL;
-  if (!verifyModel || (!allowPremium && verifyModel !== COST_MODEL)) process.env.OPENAI_VERIFY_MODEL = COST_MODEL;
+function applyReviewPolicy() {
+  process.env.OPENAI_DOCUMENT_MODEL = REVIEW_MODEL;
 }
 
 applyOpenAIKeyAlias();
-applyCostPolicy();
+applyReviewPolicy();
 
 function auditContext(state: string, searchType: string, sourceFile: string) {
   const normalizedSearchType = searchType.trim() || DEFAULT_SEARCH_TYPE;
@@ -58,6 +54,7 @@ function reviewedPageCount(exam: VeraExam): number {
 
 export async function GET() {
   applyOpenAIKeyAlias();
+  applyReviewPolicy();
   return NextResponse.json({
     product: "Cybrid Title",
     engine: "openai-multimodal-forensic",
@@ -67,8 +64,8 @@ export async function GET() {
     accessProtectionConfigured: accessProtectionConfigured(),
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     documentModel: openAIDocumentModel(),
-    verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
-    verificationPasses: 2,
+    modelPasses: 1,
+    verificationMode: "deterministic-server-evidence-gate",
     maxReviewDurationSeconds: maxDuration,
     azureRequired: false,
     ruleVersion: AUDIT_RULE_VERSION,
@@ -80,13 +77,11 @@ export async function GET() {
       legalDescriptionProtocolLoaded: true,
       quickReferenceChecklistLoaded: true,
     },
-    costPolicy: {
-      defaultModel: COST_MODEL,
-      premiumModelsBlocked: process.env.OPENAI_ALLOW_PREMIUM_MODEL !== "true",
-      automaticPremiumEscalation: false,
-      inputUsdPerMillionTokens: 0.20,
-      outputUsdPerMillionTokens: 1.20,
-      longContextThresholdTokens: 272000,
+    reviewPolicy: {
+      defaultModel: REVIEW_MODEL,
+      fullPacketModelPasses: 1,
+      deterministicCritic: true,
+      goal: "fast full-packet review without duplicate PDF token bursts",
     },
   });
 }
@@ -95,7 +90,7 @@ export async function POST(req: NextRequest) {
   let cleanupPathnames: string[] = [];
   try {
     applyOpenAIKeyAlias();
-    applyCostPolicy();
+    applyReviewPolicy();
     if (!openAIDocumentIntelligenceConfigured()) {
       return NextResponse.json({
         code: "OPENAI_NOT_CONFIGURED",
@@ -152,7 +147,8 @@ export async function POST(req: NextRequest) {
       pdfs: exam.sourceFile.toLowerCase().endsWith(".pdf") ? 1 : 0,
       pages: reviewedPageCount(exam),
       model: openAIDocumentModel(),
-      verificationPasses: 2,
+      modelPasses: 1,
+      verificationMode: "deterministic-server-evidence-gate",
     };
     console.info("CYBRID_TITLE_USAGE", JSON.stringify({ mode: "review", ...usage, state: exam.state, searchType: exam.searchType }));
 
@@ -163,20 +159,20 @@ export async function POST(req: NextRequest) {
       usage,
       openAIConfigured: true,
       documentModel: openAIDocumentModel(),
-      verificationModel: process.env.OPENAI_VERIFY_MODEL || COST_MODEL,
-      verificationPasses: 2,
+      modelPasses: 1,
+      verificationMode: "deterministic-server-evidence-gate",
       veraTemplate: "VERA v3",
       ruleVersion: AUDIT_RULE_VERSION,
       rcsOrderRulesLoaded: true,
       legalDescriptionProtocolLoaded: true,
       quickReferenceChecklistLoaded: true,
-      costPolicy: "GPT-5.6 Luna only by default; no automatic Terra/Sol escalation.",
+      reviewPolicy: "One full-packet GPT-5.6 Sol pass plus deterministic evidence/structure critic; no duplicate full-PDF model pass.",
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Examine failed";
     const providerFailure = classifyOpenAIProviderFailure(message);
     if (providerFailure) {
-      console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ mode: "review", code: providerFailure.code }));
+      console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ mode: "review", code: providerFailure.code, message: message.slice(0, 600) }));
       return NextResponse.json(providerFailure, { status: providerFailure.status });
     }
 
