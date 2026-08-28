@@ -9,6 +9,12 @@ export const maxDuration = 300;
 
 const COST_MODEL = "gpt-5.6-luna";
 
+function applyOpenAIKeyAlias() {
+  if (!process.env.OPENAI_API_KEY && process.env.OPEN_AI_KEY) {
+    process.env.OPENAI_API_KEY = process.env.OPEN_AI_KEY;
+  }
+}
+
 function applyCostPolicy() {
   const allowPremium = process.env.OPENAI_ALLOW_PREMIUM_MODEL === "true";
   const documentModel = process.env.OPENAI_DOCUMENT_MODEL;
@@ -16,10 +22,12 @@ function applyCostPolicy() {
 }
 
 export async function GET() {
+  applyOpenAIKeyAlias();
   applyCostPolicy();
   return NextResponse.json({
     mode: "build-run-sheet",
     openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
+    openAIKeyAliasAccepted: Boolean(process.env.OPEN_AI_KEY),
     accessProtectionConfigured: accessProtectionConfigured(),
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     model: process.env.OPENAI_DOCUMENT_MODEL || COST_MODEL,
@@ -31,9 +39,10 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   let cleanupPathnames: string[] = [];
   try {
+    applyOpenAIKeyAlias();
     applyCostPolicy();
     if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json({ error: "OpenAI is not configured yet. Add OPENAI_API_KEY to the Vercel project environment." }, { status: 503 });
+      return NextResponse.json({ error: "OpenAI is not configured yet. Configure OPEN_AI_KEY or OPENAI_API_KEY in the Vercel project environment." }, { status: 503 });
     }
     const access = checkExaminerAccess(request);
     if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
