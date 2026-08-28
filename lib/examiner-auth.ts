@@ -1,7 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
 
+export function testingAccessBypassEnabled(): boolean {
+  return process.env.EXAMINER_REQUIRE_ACCESS_CODE !== "true";
+}
+
 export function accessProtectionConfigured(): boolean {
-  return Boolean(process.env.EXAMINER_ACCESS_CODE);
+  return !testingAccessBypassEnabled() && Boolean(process.env.EXAMINER_ACCESS_CODE);
+}
+
+export function examinerAuthenticationMode(): "testing-bypass" | "access-code" {
+  return testingAccessBypassEnabled() ? "testing-bypass" : "access-code";
 }
 
 function equalSecrets(left: string, right: string): boolean {
@@ -12,12 +20,14 @@ function equalSecrets(left: string, right: string): boolean {
 }
 
 export function checkExaminerAccess(request: Request): { ok: true } | { ok: false; status: number; error: string } {
+  if (testingAccessBypassEnabled()) return { ok: true };
+
   const configured = process.env.EXAMINER_ACCESS_CODE;
   if (!configured) {
     return {
       ok: false,
       status: 503,
-      error: "Examiner access protection is not configured. Add EXAMINER_ACCESS_CODE to the Vercel project before enabling production AI processing.",
+      error: "Examiner access protection is enabled but EXAMINER_ACCESS_CODE is not configured.",
     };
   }
   const provided = request.headers.get("x-examiner-access-code") || "";
@@ -28,6 +38,7 @@ export function checkExaminerAccess(request: Request): { ok: true } | { ok: fals
 }
 
 export function checkExaminerAccessCode(value: string): boolean {
+  if (testingAccessBypassEnabled()) return true;
   const configured = process.env.EXAMINER_ACCESS_CODE;
   return Boolean(configured && value && equalSecrets(value, configured));
 }

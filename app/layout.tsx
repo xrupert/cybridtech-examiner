@@ -2,8 +2,8 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "CybridTech Examiner | Title Review Workbench",
-  description: "Upload title reports, verify Vera review fields, run a second-pass critic, and export branded CybridTech review documents.",
+  title: "Cybrid Title | Evidence-First Title Review",
+  description: "Upload a title-report packet for a VERA v3 evidence review or build a verified Run Sheet from recorded title documents.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

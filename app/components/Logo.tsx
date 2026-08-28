@@ -12,7 +12,7 @@ export function Logo({ height = 32, tone = "dark", className }: LogoProps) {
   return (
     <img
       src={src}
-      alt="CybridTech Solutions"
+      alt="Cybrid Title"
       className={className}
       style={{ height, width: "auto", display: "block" }}
     />

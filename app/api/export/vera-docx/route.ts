@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
       : finalStatus === "Pass" ? "All applicable critical findings are supported or examiner-approved." : `${unresolved.length} critical finding(s) remain unresolved after examiner review.`;
 
     const children: Array<Paragraph | Table> = [
-      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "CYBRIDTECH SOLUTIONS", bold: true, size: 30 })] }),
+      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "CYBRID TITLE", bold: true, size: 30 })] }),
       new Paragraph({ alignment: AlignmentType.CENTER, heading: HeadingLevel.TITLE, children: [new TextRun({ text: "Title Report Review Summary", bold: true })] }),
       metaTable(exam),
       new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: "Property & Tax Information", bold: true })] }),
@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
       new Paragraph({ children: [new TextRun({ text: "Confirmation: ", bold: true }), new TextRun(finalStatus === "Pass" && pending.length === 0 ? "The document meets all currently loaded quality standards with no unresolved critical issues." : "The document contains issues or pending examiner decisions identified above and does not yet meet final quality standards.")] }),
       new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: "Notes / Comments", bold: true })] }),
       new Paragraph(text(exam.notes || "None")),
-      new Paragraph({ children: [new TextRun({ text: `Prepared ${new Date(exam.extractedAt || Date.now()).toLocaleString()} · CybridTech Examiner · VERA v3 structure`, italics: true, size: 18 })] }),
+      new Paragraph({ children: [new TextRun({ text: `Prepared ${new Date(exam.extractedAt || Date.now()).toLocaleString()} · Cybrid Title · VERA v3 structure`, italics: true, size: 18 })] }),
     ];
 
     const document = new Document({ sections: [{ properties: {}, children }] });
