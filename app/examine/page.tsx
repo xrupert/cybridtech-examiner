@@ -1,82 +1,351 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import type { AuditFinding, EvidenceRef, FieldEvidence, VeraExam } from "@/lib/vera";
-import { examToPlain } from "@/lib/render-report";
-import { QUESTIONS } from "@/lib/questions";
+import { upload } from "@vercel/blob/client";
+import { useEffect, useMemo, useState } from "react";
 import { SEARCH_TYPES } from "@/lib/audit-rules";
+import { runSheetToCsv, type RunSheetBuild, type RunSheetRow } from "@/lib/run-sheet";
+import type { AuditFinding, EvidenceRef, FindingStatus, VeraExam } from "@/lib/vera";
 import { Logo } from "../components/Logo";
 
-function escapeHtml(value: string) {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
-}
-function safeFileName(value: string) { return (value || "title-review").replace(/\.[^/.]+$/, "").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "") || "title-review"; }
-async function imageToDataUrl(url: string) {
-  const response = await fetch(url); if (!response.ok) throw new Error("Could not load the CybridTech letterhead logo."); const blob = await response.blob();
-  return await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error("Could not prepare the letterhead logo.")); reader.readAsDataURL(blob); });
-}
-function statusLabel(finding: AuditFinding | FieldEvidence) {
-  if (finding.status === "NOT_APPLICABLE") return "PASS / N/A";
-  if (finding.status === "CANNOT_CONFIRM") return "FAIL / CANNOT CONFIRM";
-  if (finding.status === "NOT_STATED") return "NOT STATED";
-  return finding.status.replaceAll("_", " ");
-}
-function evidenceBlocks(evidence: EvidenceRef[]) {
-  if (!evidence.length) return `<div class="evidence empty">Evidence: Not Stated</div>`;
-  return evidence.map((ev) => `<div class="evidence"><b>Page ${ev.page} · ${escapeHtml(ev.documentType)}</b><br>“${escapeHtml(ev.quote)}”<br><small>${escapeHtml(ev.source)}</small></div>`).join("");
-}
-function buildWordDocument(exam: VeraExam, logoDataUrl: string) {
-  const summary = exam.summaryEvidence.map((field) => `<section class="finding"><h3>${escapeHtml(field.field)} <span class="status">${escapeHtml(statusLabel(field))}</span></h3><p><b>Value:</b> ${escapeHtml(field.value)}</p>${evidenceBlocks(field.evidence)}<p><b>Proof / Reason:</b> ${escapeHtml(field.proofReason)}</p></section>`).join("");
-  const findings = exam.findings.map((finding) => `<section class="finding"><h3>${finding.number}. ${escapeHtml(finding.question)} <span class="status">${escapeHtml(statusLabel(finding))}</span></h3><p><b>Response:</b> ${escapeHtml(finding.response)}</p>${evidenceBlocks(finding.evidence)}${finding.critical ? `<p><b>Status:</b> ${finding.status === "PASS" || finding.status === "NOT_APPLICABLE" ? "PASS" : "FAIL"}</p>` : ""}<p><b>Proof / Reason:</b> ${escapeHtml(finding.proofReason)}</p>${finding.commentary ? `<p><b>Commentary:</b> ${escapeHtml(finding.commentary)}</p>` : ""}</section>`).join("");
-  const documents = exam.documents.map((doc) => `<p><b>${escapeHtml(doc.documentType)}</b> · Page ${doc.pageStart}${doc.pageEnd !== doc.pageStart ? `-${doc.pageEnd}` : ""}${doc.instrumentNumber ? ` · Instrument ${escapeHtml(doc.instrumentNumber)}` : ""}${doc.recordingDate ? ` · Recorded ${escapeHtml(doc.recordingDate)}` : ""}<br><small>${escapeHtml(doc.excerpt)}</small></p>`).join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>CybridTech Forensic Title Report Review</title><style>@page{margin:.55in}body{font-family:Arial,Helvetica,sans-serif;color:#15161a;font-size:10pt;line-height:1.45;margin:0}.letterhead{display:table;width:100%;border-bottom:3px solid #6f46c7;padding-bottom:14px;margin-bottom:18px}.brand,.title{display:table-cell;vertical-align:middle}.brand img{width:250px}.title{text-align:right}.title strong{display:block;font-size:15pt}.title span{color:#667085;font-size:8pt;text-transform:uppercase;letter-spacing:.08em}.summary{width:100%;border-collapse:collapse;margin-bottom:14px}.summary td{padding:4px 8px 4px 0}.label{color:#667085;width:20%;font-size:8pt;text-transform:uppercase}.verdict{margin:12px 0 20px;padding:10px 12px;border-left:4px solid ${exam.status === "Pass" ? "#16846e" : "#b7791f"};background:#f7f7fa}.verdict strong{font-size:14pt}h2{margin-top:24px;border-bottom:2px solid #15161a;padding-bottom:5px}.finding{break-inside:avoid;margin:0 0 18px}.finding h3{font-size:10pt;margin:0 0 6px;border-bottom:1px solid #d9dce3;padding-bottom:5px;color:#5f3fb2}.status{float:right;color:#667085;font-size:8pt}.finding p{margin:5px 0}.evidence{margin:7px 0;padding:8px 10px;background:#f7f7fa;border-left:2px solid #8052ff;font-size:9pt}.evidence small,.footer small{color:#667085}.audit{margin:24px 0;padding-top:12px;border-top:2px solid #15161a}.footer{margin-top:24px;padding-top:10px;border-top:1px solid #d9dce3;color:#7a808b;font-size:8pt}</style></head><body><div class="letterhead"><div class="brand"><img src="${logoDataUrl}" alt="CybridTech Solutions"></div><div class="title"><strong>Forensic Title Report Review</strong><span>OpenAI Evidence-First Examiner</span></div></div><table class="summary"><tr><td class="label">Client Order</td><td>${escapeHtml(exam.clientOrder)}</td><td class="label">Search Type</td><td>${escapeHtml(exam.searchType)}</td></tr><tr><td class="label">Property</td><td colspan="3">${escapeHtml(exam.propertyAddress)}</td></tr><tr><td class="label">State / County</td><td>${escapeHtml(exam.state)} / ${escapeHtml(exam.county)}</td><td class="label">Effective Date</td><td>${escapeHtml(exam.searchEffectiveDate)}</td></tr></table><div class="verdict"><strong>${escapeHtml(exam.status.toUpperCase())}</strong> — ${exam.criticalPassRate}% critical pass rate<br>${escapeHtml(exam.reason)}</div><h2>Property, Tax & Header Evidence</h2>${summary}<h2>Required Questions 1–20</h2>${findings}<div class="audit"><h2>Packet Document Inventory</h2>${documents || "<p>No documents classified.</p>"}</div><div class="audit"><h2>Accuracy Audit</h2><p><b>Vesting Deed:</b> ${escapeHtml(exam.audit.vestingDeed)}</p><p><b>Chain of Title:</b> ${escapeHtml(exam.audit.chainOfTitle)}</p><p><b>Mortgage Information:</b> ${escapeHtml(exam.audit.mortgageInformation)}</p><p><b>Tax Information:</b> ${escapeHtml(exam.audit.taxInformation)}</p><p><b>Judgments and Liens:</b> ${escapeHtml(exam.audit.judgmentsAndLiens)}</p><p><b>Easements and Restrictions:</b> ${escapeHtml(exam.audit.easementsAndRestrictions)}</p></div><div class="audit"><h2>Extraction Audit Trail</h2><p>${escapeHtml(exam.extractionSummary)}</p><p><b>Manual review required:</b> ${exam.manualReviewRequired ? "YES" : "NO"}</p><p><b>Rule pack:</b> ${escapeHtml(exam.rulePackStatus)}</p><p><b>Notes:</b> ${escapeHtml(exam.notes || "None")}</p></div><div class="footer">Prepared with CybridTech Examiner · ${escapeHtml(new Date(exam.extractedAt).toLocaleString())}</div></body></html>`;
+type Mode = "review" | "build";
+type Readiness = {
+  openAIConfigured: boolean;
+  accessProtectionConfigured: boolean;
+  largeFileStorageConfigured: boolean;
+  documentModel?: string;
+};
+
+const inputStyle = { width: "100%", background: "#050505", color: "#fff", border: "1px solid rgba(255,255,255,.16)", borderRadius: 8, padding: "10px 11px", fontSize: 12 } as const;
+const panelStyle = { background: "rgba(255,255,255,.025)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 16, padding: 18 } as const;
+const evidenceStyle = { marginTop: 8, padding: "10px 12px", borderLeft: "2px solid #8052ff", background: "rgba(128,82,255,.07)", color: "#d7d7dc", fontSize: 12, lineHeight: 1.5 } as const;
+
+function statusLabel(status: FindingStatus) {
+  if (status === "NOT_APPLICABLE") return "PASS / N/A";
+  if (status === "CANNOT_CONFIRM") return "CANNOT CONFIRM";
+  return status.replaceAll("_", " ");
 }
 
-const selectStyle = { width: "100%", background: "#050505", color: "#fff", border: "1px solid rgba(255,255,255,.16)", borderRadius: 8, padding: "10px 11px", fontSize: 12 } as const;
-const evidenceStyle = { marginTop: 8, padding: "10px 12px", borderLeft: "2px solid #8052ff", background: "rgba(128,82,255,.07)", color: "#d7d7dc", fontSize: 12, lineHeight: 1.5 } as const;
+function safeName(value: string) {
+  return (value || "title-output").replace(/\.[^/.]+$/, "").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "") || "title-output";
+}
+
+async function parseApiResponse(response: Response) {
+  const contentType = response.headers.get("content-type") || "";
+  let payload: any = null;
+  let raw = "";
+  if (contentType.includes("application/json")) {
+    try { payload = await response.json(); } catch { payload = null; }
+  } else {
+    raw = await response.text().catch(() => "");
+  }
+  if (!response.ok) {
+    if (response.status === 413) throw new Error("This packet is larger than Vercel's direct-request limit. Configure the private large-file store or use the direct-upload path.");
+    throw new Error(payload?.error || raw || `Request failed (${response.status}).`);
+  }
+  return payload;
+}
 
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }) {
   if (!evidence.length) return <div style={evidenceStyle}><b>Evidence:</b> Not Stated</div>;
-  return <>{evidence.map((ev, index) => <div key={`${ev.page}-${index}`} style={evidenceStyle}><b>Evidence · Page {ev.page} · {ev.documentType}</b><div style={{marginTop:4}}>“{ev.quote}”</div><small style={{color:"#85858d"}}>{ev.source}{ev.instrumentNumber ? ` · Instrument ${ev.instrumentNumber}` : ""}</small></div>)}</>;
+  return <>{evidence.map((item, index) => <div key={`${item.sourceFile || "packet"}-${item.page}-${index}`} style={evidenceStyle}>
+    <b>{item.sourceFile ? `${item.sourceFile} · ` : ""}Page {item.page} · {item.documentType}</b>
+    <div style={{ marginTop: 4 }}>“{item.quote}”</div>
+    {item.instrumentNumber ? <small style={{ color: "#85858d" }}>Instrument {item.instrumentNumber}</small> : null}
+  </div>)}</>;
+}
+
+function effectiveStatus(finding: AuditFinding): FindingStatus {
+  return finding.reviewDecision === "OVERRIDDEN" && finding.reviewerStatus ? finding.reviewerStatus : finding.status;
+}
+
+function reviewVerdict(exam: VeraExam) {
+  const critical = exam.findings.filter((item) => item.critical);
+  const failed = critical.filter((item) => !["PASS", "NOT_APPLICABLE"].includes(effectiveStatus(item)));
+  const pending = critical.filter((item) => !item.reviewDecision || item.reviewDecision === "PENDING" || item.reviewDecision === "NEEDS_REVIEW");
+  return { status: failed.length ? "Fail" : "Pass", failed: failed.length, pending: pending.length };
 }
 
 export default function ExaminePage() {
-  const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [exams, setExams] = useState<VeraExam[]>([]); const [activeIndex, setActiveIndex] = useState(0); const [pasted, setPasted] = useState(""); const [hot, setHot] = useState(false); const [state, setState] = useState("TX"); const [searchType, setSearchType] = useState("General Search");
-  const exam = exams[activeIndex] || null; const plain = useMemo(() => exam ? examToPlain(exam) : "", [exam]); const completion = useMemo(() => exam?.findings.length ? Math.round((exam.findings.filter((f) => f.status !== "UNDETERMINED").length / exam.findings.length) * 100) : 0, [exam]);
+  const [mode, setMode] = useState<Mode>("review");
+  const [stateCode, setStateCode] = useState("TX");
+  const [searchType, setSearchType] = useState<(typeof SEARCH_TYPES)[number]>("Foreclosure");
+  const [accessCode, setAccessCode] = useState("");
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [exam, setExam] = useState<VeraExam | null>(null);
+  const [runSheet, setRunSheet] = useState<RunSheetBuild | null>(null);
 
-  async function run(body: FormData | { fixtureId?: string; text?: string }) {
-    setBusy(true); setError(""); setNotice("");
-    try {
-      let requestBody: BodyInit; let headers: HeadersInit | undefined;
-      if (body instanceof FormData) { body.set("state", state); body.set("searchType", searchType); requestBody = body; }
-      else { requestBody = JSON.stringify({ ...body, state, searchType }); headers = { "Content-Type": "application/json" }; }
-      const response = await fetch("/api/examine", { method: "POST", body: requestBody, headers }); const json = await response.json(); if (!response.ok) throw new Error(json.error || "Examination failed");
-      const incoming: VeraExam[] = Array.isArray(json.exams) ? json.exams : json.exam ? [json.exam] : []; if (!incoming.length) throw new Error("The examiner did not return a review."); setExams(incoming); setActiveIndex(0);
-      setNotice(`${incoming.length} review${incoming.length === 1 ? "" : "s"} ready · ${json.documentModel || "OpenAI"} · ${json.verificationPasses || 2} independent passes.`);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Examination failed"); } finally { setBusy(false); }
+  useEffect(() => {
+    const saved = sessionStorage.getItem("cybrid-examiner-access") || "";
+    if (saved) setAccessCode(saved);
+    fetch("/api/examine").then((response) => response.json()).then((data) => setReadiness(data)).catch(() => setReadiness(null));
+  }, []);
+
+  useEffect(() => {
+    if (accessCode) sessionStorage.setItem("cybrid-examiner-access", accessCode);
+  }, [accessCode]);
+
+  const attentionFindings = useMemo(() => exam ? [...exam.findings].sort((a, b) => {
+    const score = (item: AuditFinding) => (item.critical && !["PASS", "NOT_APPLICABLE"].includes(item.status) ? 0 : !["PASS", "NOT_APPLICABLE"].includes(item.status) ? 1 : item.critical ? 2 : 3);
+    return score(a) - score(b) || a.number - b.number;
+  }) : [], [exam]);
+  const verdict = useMemo(() => exam ? reviewVerdict(exam) : null, [exam]);
+
+  function authHeaders(extra: HeadersInit = {}) {
+    return { ...extra, "x-examiner-access-code": accessCode };
   }
-  function onFiles(files: FileList | null) { if (!files?.length) return; const form = new FormData(); Array.from(files).forEach((file) => form.append("files", file)); void run(form); }
-  function patch(id: string, value: string) { const question = QUESTIONS.find((item) => item.id === id); if (!question) return; setExams((current) => current.map((item, index) => index === activeIndex ? question.set(item, value) : item)); }
-  async function copyReport() { try { await navigator.clipboard.writeText(plain); setNotice("Forensic review copied to clipboard."); } catch { setError("Clipboard access was blocked by the browser."); } }
-  async function downloadWord() { if (!exam) return; try { const logo = await imageToDataUrl("/cybridtech-logo-letterhead.png"); const blob = new Blob([buildWordDocument(exam, logo)], { type: "application/msword;charset=utf-8" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${safeFileName(exam.clientOrder !== "Not Provided" ? exam.clientOrder : exam.sourceFile)}-forensic-title-review.doc`; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url); setNotice("Detailed Word review downloaded with CybridTech letterhead."); } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not create Word review."); } }
-  function clearWorkspace() { setExams([]); setActiveIndex(0); setPasted(""); setError(""); setNotice(""); }
+
+  async function uploadToPrivateStore(files: File[]) {
+    if (!accessCode) throw new Error("Enter the Examiner access code first.");
+    const pathnames: string[] = [];
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const result = await upload(`title-examiner/${Date.now()}-${safeName(file.name)}`, file, {
+        access: "private",
+        handleUploadUrl: "/api/uploads",
+        clientPayload: JSON.stringify({ accessCode }),
+        multipart: file.size > 4_000_000,
+        onUploadProgress: ({ percentage }) => {
+          const overall = Math.round(((index + percentage / 100) / files.length) * 100);
+          setUploadPercent(overall);
+        },
+      });
+      pathnames.push(result.pathname);
+    }
+    return pathnames;
+  }
+
+  async function submitFiles(fileList: FileList | null) {
+    if (!fileList?.length) return;
+    const files = Array.from(fileList);
+    if (mode === "review" && files.length !== 1) {
+      setError("Review Existing Title Report accepts one complete title-report packet at a time.");
+      return;
+    }
+    setBusy(true); setError(""); setNotice(""); setUploadPercent(0);
+    try {
+      if (!accessCode) throw new Error("Enter the Examiner access code.");
+      const endpoint = mode === "review" ? "/api/examine" : "/api/run-sheet";
+      let response: Response;
+      const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+      if (readiness?.largeFileStorageConfigured) {
+        const blobPathnames = await uploadToPrivateStore(files);
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ blobPathnames, state: stateCode, searchType }),
+        });
+      } else {
+        if (totalSize > 4_000_000) throw new Error("This packet is too large for direct Vercel upload. Create the project's private Vercel Blob store so large title packets can upload directly without the 4.5 MB function limit.");
+        const form = new FormData();
+        files.forEach((file) => form.append("files", file));
+        form.set("state", stateCode);
+        form.set("searchType", searchType);
+        response = await fetch(endpoint, { method: "POST", headers: authHeaders(), body: form });
+      }
+      const data = await parseApiResponse(response);
+      if (mode === "review") {
+        const incoming = data?.exam as VeraExam | undefined;
+        if (!incoming) throw new Error("The Examiner did not return a VERA review.");
+        incoming.findings = incoming.findings.map((finding) => ({ ...finding, reviewDecision: "PENDING" }));
+        setExam(incoming); setRunSheet(null);
+        setNotice(`VERA v3 review ready · ${data.documentModel || "OpenAI"} · ${data.verificationPasses || 2} passes.`);
+      } else {
+        const incoming = data?.build as RunSheetBuild | undefined;
+        if (!incoming) throw new Error("The Examiner did not return a Run Sheet.");
+        setRunSheet(incoming); setExam(null);
+        setNotice(`Run Sheet built from ${incoming.sourceFiles.length} document${incoming.sourceFiles.length === 1 ? "" : "s"} · ${data.verificationPasses || 2} passes.`);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Processing failed.");
+    } finally {
+      setBusy(false); setUploadPercent(0);
+    }
+  }
+
+  function setReviewDecision(number: number, decision: "APPROVED" | "OVERRIDDEN" | "NEEDS_REVIEW") {
+    setExam((current) => current ? {
+      ...current,
+      findings: current.findings.map((finding) => finding.number === number ? {
+        ...finding,
+        reviewDecision: decision,
+        reviewerStatus: decision === "OVERRIDDEN" ? (finding.reviewerStatus || finding.status) : undefined,
+        reviewerResponse: decision === "OVERRIDDEN" ? (finding.reviewerResponse || finding.response) : undefined,
+        reviewerReason: decision === "OVERRIDDEN" ? (finding.reviewerReason || "") : undefined,
+      } : finding),
+    } : current);
+  }
+
+  function patchFinding(number: number, patch: Partial<AuditFinding>) {
+    setExam((current) => current ? { ...current, findings: current.findings.map((item) => item.number === number ? { ...item, ...patch } : item) } : current);
+  }
+
+  function approveCleanFindings() {
+    setExam((current) => current ? {
+      ...current,
+      findings: current.findings.map((finding) => ["PASS", "NOT_APPLICABLE"].includes(finding.status) && (!finding.reviewDecision || finding.reviewDecision === "PENDING") ? { ...finding, reviewDecision: "APPROVED" } : finding),
+    } : current);
+  }
+
+  function patchRunRow(index: number, key: keyof RunSheetRow, value: string) {
+    setRunSheet((current) => current ? { ...current, rows: current.rows.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: value } : row) } : current);
+  }
+
+  async function downloadVeraDocx() {
+    if (!exam) return;
+    try {
+      const response = await fetch("/api/export/vera-docx", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(exam),
+      });
+      if (!response.ok) await parseApiResponse(response);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${safeName(exam.clientOrder !== "Not Provided" ? exam.clientOrder : exam.sourceFile)}-VERA-v3.docx`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not export DOCX.");
+    }
+  }
+
+  function downloadRunSheetCsv() {
+    if (!runSheet) return;
+    const blob = new Blob([runSheetToCsv(runSheet)], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${safeName(runSheet.propertyAddress)}-run-sheet.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function reset() {
+    setExam(null); setRunSheet(null); setError(""); setNotice("");
+  }
 
   return <main className="workbench-page">
-    <header className="workbench-nav no-print"><Link href="/" aria-label="CybridTech home"><Logo height={38} /></Link><div className="workbench-nav-center"><span>EXAMINER / OPENAI FORENSIC WORKBENCH</span>{exam ? <b>{activeIndex + 1} OF {exams.length}</b> : null}</div><div className="workbench-nav-actions">{exam ? <button className="text-button" onClick={clearWorkspace}>New packet</button> : null}<button className="primary-pill" onClick={() => window.print()} disabled={!exam}>Export PDF</button></div></header>
-    <section className="workbench-heading no-print"><p className="eyebrow">Evidence-first multimodal title audit</p><h1>Every answer carries its proof.</h1><p>OpenAI reads native text and scanned PDF page images together, then a second independent pass tries to disagree. Conflicts become Cannot Confirm instead of guesses.</p></section>
-    <div className="workbench-grid">
-      <aside className="queue-rail no-print"><div className="rail-label">Audit context</div><label style={{display:"grid",gap:6,marginBottom:10,fontSize:11,color:"#9a9a9a"}}>State<input value={state} maxLength={2} onChange={(e) => setState(e.target.value.toUpperCase())} style={selectStyle} /></label><label style={{display:"grid",gap:6,marginBottom:18,fontSize:11,color:"#9a9a9a"}}>Search type<select value={searchType} onChange={(e) => setSearchType(e.target.value)} style={selectStyle}>{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><div className="rail-label">Source packet</div><div className={`upload-zone ${hot ? "is-hot" : ""}`} onDragOver={(e) => {e.preventDefault();setHot(true)}} onDragLeave={() => setHot(false)} onDrop={(e) => {e.preventDefault();setHot(false);onFiles(e.dataTransfer.files)}}><div className="upload-mark">+</div><strong>{busy ? "Running two forensic passes…" : "Drop title reports here"}</strong><span>PDF, TXT, MD · single or bulk</span><label className="primary-pill compact-pill">Choose files<input type="file" multiple accept=".pdf,.txt,.md" hidden onChange={(e) => onFiles(e.target.files)} /></label></div><details className="paste-drawer"><summary>Paste report text</summary><textarea className="paste-input" placeholder="Paste title report text…" value={pasted} onChange={(e) => setPasted(e.target.value)} /><button className="text-button accent-text" disabled={busy || !pasted.trim()} onClick={() => void run({text:pasted})}>Examine pasted text →</button></details><div className="fixture-links"><span>DEMO DATA</span><button onClick={() => void run({fixtureId:"kern-mock"})}>Kern County mock</button><button onClick={() => void run({fixtureId:"prelim-mock"})}>Preliminary mock</button></div>{exams.length ? <div className="queue-list"><div className="rail-label">Review queue</div>{exams.map((item,index) => <button key={`${item.sourceFile}-${index}`} className={`queue-item ${index===activeIndex?"is-active":""}`} onClick={() => setActiveIndex(index)}><span className={`queue-status ${item.status.toLowerCase()}`}>{item.status}</span><strong>{item.clientOrder !== "Not Provided" ? item.clientOrder : `Report ${index+1}`}</strong><small>{item.sourceFile}</small></button>)}</div> : null}</aside>
-      <section className="editor-column no-print">{exam ? <><div className="editor-toolbar"><div><span className="rail-label">Active forensic review</span><h2>{exam.clientOrder !== "Not Provided" ? exam.clientOrder : exam.sourceFile}</h2><p>{exam.propertyAddress}</p></div><div className="editor-score"><span>{completion}%</span><small>questions evaluated</small></div></div><div className={`critic-strip ${exam.status.toLowerCase()}`}><div><span>FORENSIC VERDICT · {exam.criticalPassRate}% CRITICAL PASS</span><strong>{exam.status}</strong><p>{exam.reason}</p></div></div><div style={{padding:"14px 0 18px",borderBottom:"1px solid rgba(255,255,255,.09)",fontSize:12,color:exam.manualReviewRequired?"#ffb829":"#9a9a9a"}}><b>Extraction audit:</b> {exam.extractionSummary}<br/><b>Manual review required:</b> {exam.manualReviewRequired ? " YES" : " NO"}<br/><b>Rule pack:</b> {exam.rulePackStatus}</div>
-        <div style={{marginTop:26}}><span className="rail-label">Property, tax & header evidence</span></div>{exam.summaryEvidence.map((field,index) => <details className="review-section" key={`${field.field}-${index}`}><summary><span>{field.field}: {field.value}</span><small>{statusLabel(field)}</small></summary><div className="question-list" style={{padding:"8px 0 16px"}}><EvidenceList evidence={field.evidence}/><div style={{marginTop:8,color:"#bdbdbd",fontSize:12,lineHeight:1.55}}><b>Proof / Reason:</b> {field.proofReason}</div></div></details>)}
-        <div style={{marginTop:26}}><span className="rail-label">Required questions 1–20 · evidence attached</span></div>{exam.findings.map((finding) => <details className="review-section" key={finding.number} open={finding.critical && finding.status !== "PASS" && finding.status !== "NOT_APPLICABLE"}><summary><span>{finding.number}. {finding.question}</span><small>{statusLabel(finding)}</small></summary><div className="question-list" style={{padding:"8px 0 16px"}}><div style={{fontSize:14,lineHeight:1.5}}><b>Response:</b> {finding.response}</div><EvidenceList evidence={finding.evidence}/>{finding.critical ? <div style={{marginTop:10,fontSize:12}}><b>Status:</b> {finding.status === "PASS" || finding.status === "NOT_APPLICABLE" ? "PASS" : "FAIL"}</div> : null}<div style={{marginTop:8,color:"#bdbdbd",fontSize:12,lineHeight:1.55}}><b>Proof / Reason:</b> {finding.proofReason}</div>{finding.commentary ? <div style={{marginTop:8,color:"#8f8f97",fontSize:11}}><b>Commentary:</b> {finding.commentary}</div> : null}</div></details>)}
-        <details className="review-section"><summary><span>Packet document inventory</span><small>{exam.documents.length} documents</small></summary><div className="question-list">{exam.documents.map((doc,index) => <div key={`${doc.pageStart}-${index}`} style={{padding:"10px 0",borderBottom:"1px solid rgba(255,255,255,.08)",fontSize:12}}><b>Page {doc.pageStart}{doc.pageEnd !== doc.pageStart ? `-${doc.pageEnd}` : ""} · {doc.documentType}</b><div style={{color:"#9a9a9a",marginTop:4}}>{doc.instrumentNumber ? `Instrument ${doc.instrumentNumber} · ` : ""}{doc.recordingDate || "No recording date stated"}</div><div style={{color:"#777",marginTop:3}}>{doc.excerpt}</div></div>)}</div></details>
-        <details className="review-section"><summary><span>Extracted fields / examiner corrections</span><small>{QUESTIONS.length} fields</small></summary><div className="question-list"><p style={{color:"#9a9a9a",fontSize:11,lineHeight:1.5}}>Manual edits change the deliverable only. They do not manufacture or replace cited source evidence.</p>{QUESTIONS.map((question) => <label className="question-row" key={question.id}><span>{question.prompt}</span><textarea rows={["legalDescription","reason","confirmation","notes"].includes(question.id)?4:1} value={question.get(exam)} onChange={(e) => patch(question.id,e.target.value)} /></label>)}</div></details></> : <div className="editor-empty"><span className="eyebrow">Waiting for a packet</span><h2>Your evidence review appears here.</h2><p>Choose the state and search type, then upload a title-report packet. OpenAI will run two independent multimodal reviews and preserve exact page evidence.</p></div>}</section>
-      <aside className={`report-rail ${exam?"":"no-print"}`}>{exam ? <><div className="report-actions no-print"><div><span className="rail-label">Client output</span><small>Detailed forensic document</small></div><div><button className="text-button" onClick={() => void copyReport()}>Copy</button><button className="text-button" onClick={() => void downloadWord()}>Word</button></div></div><article className="document-preview printable-document"><header className="document-letterhead"><Logo height={54} tone="letterhead" /><div><strong>Forensic Title Report Review</strong><span>OpenAI Evidence-First Examiner</span></div></header><div className="document-meta-grid"><div><span>Client Order</span><b>{exam.clientOrder}</b></div><div><span>Search Type</span><b>{exam.searchType}</b></div><div className="wide"><span>Property Address</span><b>{exam.propertyAddress}</b></div><div><span>State / County</span><b>{exam.state} / {exam.county}</b></div><div><span>Effective Date</span><b>{exam.searchEffectiveDate}</b></div></div><div className={`document-verdict ${exam.status.toLowerCase()}`}><span>Review status · {exam.criticalPassRate}% critical pass</span><strong>{exam.status}</strong><p>{exam.reason}</p></div>
-        <section className="document-section"><h3>Property, Tax & Header Evidence</h3>{exam.summaryEvidence.map((field,index) => <div className="document-row" key={`summary-${index}`} style={{display:"block",padding:"10px 0"}}><span>{field.field} · {statusLabel(field)}</span><p><b>Value:</b> {field.value}</p>{field.evidence.length ? field.evidence.map((ev,i) => <p key={i} style={{fontSize:"9px",color:"#4e5562",margin:"4px 0"}}><b>Evidence P{ev.page}:</b> “{ev.quote}”</p>) : <p style={{fontSize:"9px",color:"#777"}}>Evidence: Not Stated</p>}<p style={{fontSize:"9px"}}><b>Proof / Reason:</b> {field.proofReason}</p></div>)}</section>
-        <section className="document-section"><h3>Required Questions 1–20</h3>{exam.findings.map((finding) => <div className="document-row" key={`doc-${finding.number}`} style={{display:"block",padding:"10px 0"}}><span>{finding.number}. {finding.question} · {statusLabel(finding)}</span><p><b>Response:</b> {finding.response}</p>{finding.evidence.length ? finding.evidence.map((ev,index) => <p key={index} style={{fontSize:"9px",color:"#4e5562",margin:"4px 0"}}><b>Evidence P{ev.page}:</b> “{ev.quote}”</p>) : <p style={{fontSize:"9px",color:"#777"}}>Evidence: Not Stated</p>}<p style={{fontSize:"9px"}}><b>Proof / Reason:</b> {finding.proofReason}</p></div>)}</section>
-        <section className="document-section"><h3>Packet Document Inventory</h3>{exam.documents.map((doc,index) => <div className="document-row" key={`inventory-${index}`} style={{display:"block"}}><span>Page {doc.pageStart}{doc.pageEnd !== doc.pageStart ? `-${doc.pageEnd}` : ""} · {doc.documentType}</span><p>{doc.instrumentNumber ? `Instrument ${doc.instrumentNumber}. ` : ""}{doc.recordingDate ? `Recorded ${doc.recordingDate}. ` : ""}{doc.excerpt}</p></div>)}</section>
-        <section className="document-section"><h3>Accuracy Audit</h3><div className="document-rows"><div className="document-row"><span>Vesting Deed</span><p>{exam.audit.vestingDeed}</p></div><div className="document-row"><span>Chain of Title</span><p>{exam.audit.chainOfTitle}</p></div><div className="document-row"><span>Mortgage Information</span><p>{exam.audit.mortgageInformation}</p></div><div className="document-row"><span>Tax Information</span><p>{exam.audit.taxInformation}</p></div><div className="document-row"><span>Judgments and Liens</span><p>{exam.audit.judgmentsAndLiens}</p></div><div className="document-row"><span>Easements and Restrictions</span><p>{exam.audit.easementsAndRestrictions}</p></div></div></section><section className="document-section"><h3>Extraction Audit Trail</h3><p style={{color:"#4e5562",fontSize:"10px"}}>{exam.extractionSummary}</p><p style={{color:"#4e5562",fontSize:"10px"}}>Manual review required: <b>{exam.manualReviewRequired?"YES":"NO"}</b></p><p style={{color:"#4e5562",fontSize:"10px"}}>{exam.rulePackStatus}</p></section><footer className="document-footer"><span>Prepared with CybridTech Examiner</span><span>{new Date(exam.extractedAt).toLocaleString()}</span></footer></article></> : <div className="report-empty"><span>FORENSIC DOCUMENT PREVIEW</span><p>The evidence-backed review will appear here.</p></div>}</aside>
-    </div>{(error||notice)?<div className={`toast no-print ${error?"error":"success"}`} role="status">{error||notice}</div>:null}
+    <header className="workbench-nav no-print">
+      <Link href="/" aria-label="CybridTech home"><Logo height={38} /></Link>
+      <div className="workbench-nav-center"><span>EXAMINER / TITLE EVIDENCE WORKBENCH</span><b>MVP</b></div>
+      <div className="workbench-nav-actions">{exam || runSheet ? <button className="text-button" onClick={reset}>New packet</button> : null}</div>
+    </header>
+
+    <section className="workbench-heading no-print">
+      <p className="eyebrow">One evidence engine · two directions</p>
+      <h1>Review the run sheet. Or build it.</h1>
+      <p>Use the same source-preserving document engine either to audit an existing title report against VERA v3, or to construct a verified Run Sheet from the recorded title documents themselves.</p>
+    </section>
+
+    <div className="no-print" style={{ maxWidth: 1500, margin: "0 auto", padding: "0 24px 60px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 12, marginBottom: 18 }}>
+        <button onClick={() => { setMode("review"); reset(); }} style={{ ...panelStyle, textAlign: "left", color: "#fff", cursor: "pointer", outline: mode === "review" ? "2px solid #8052ff" : "none" }}>
+          <span className="eyebrow">MODE 1</span><h3 style={{ margin: "8px 0" }}>Review Existing Title Report</h3><p style={{ color: "#9a9a9a", margin: 0 }}>Run Sheet + title-document packet → evidence-backed VERA v3 examination → examiner approval/override → DOCX/PDF.</p>
+        </button>
+        <button onClick={() => { setMode("build"); reset(); }} style={{ ...panelStyle, textAlign: "left", color: "#fff", cursor: "pointer", outline: mode === "build" ? "2px solid #8052ff" : "none" }}>
+          <span className="eyebrow">MODE 2</span><h3 style={{ margin: "8px 0" }}>Build Run Sheet From Documents</h3><p style={{ color: "#9a9a9a", margin: 0 }}>Recorded title documents → classify/extract → independently verify → editable Run Sheet → CSV.</p>
+        </button>
+      </div>
+
+      <section style={{ ...panelStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 18 }}>
+        <label style={{ display: "grid", gap: 6, fontSize: 11, color: "#9a9a9a" }}>State
+          <input value={stateCode} maxLength={2} onChange={(event) => setStateCode(event.target.value.toUpperCase())} style={inputStyle} />
+        </label>
+        <label style={{ display: "grid", gap: 6, fontSize: 11, color: "#9a9a9a" }}>RCS Search Type
+          <select value={searchType} onChange={(event) => setSearchType(event.target.value as (typeof SEARCH_TYPES)[number])} style={inputStyle}>{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select>
+        </label>
+        <label style={{ display: "grid", gap: 6, fontSize: 11, color: "#9a9a9a" }}>Examiner Access Code
+          <input type="password" value={accessCode} onChange={(event) => setAccessCode(event.target.value)} style={inputStyle} placeholder="Server-verified access code" />
+        </label>
+        <div style={{ fontSize: 11, color: "#9a9a9a", alignSelf: "end", lineHeight: 1.6 }}>
+          OpenAI: <b style={{ color: readiness?.openAIConfigured ? "#80d7c5" : "#ffb829" }}>{readiness?.openAIConfigured ? "READY" : "NOT CONFIGURED"}</b><br />
+          Protected: <b style={{ color: readiness?.accessProtectionConfigured ? "#80d7c5" : "#ffb829" }}>{readiness?.accessProtectionConfigured ? "YES" : "NO"}</b><br />
+          Large files: <b style={{ color: readiness?.largeFileStorageConfigured ? "#80d7c5" : "#ffb829" }}>{readiness?.largeFileStorageConfigured ? "READY" : "DIRECT <4.5MB ONLY"}</b>
+        </div>
+      </section>
+
+      {!exam && !runSheet ? <section style={{ ...panelStyle, textAlign: "center", padding: 34 }}>
+        <div style={{ fontSize: 40, marginBottom: 10 }}>＋</div>
+        <h2 style={{ margin: "0 0 8px" }}>{mode === "review" ? "Upload one complete title-report packet" : "Upload the title documents"}</h2>
+        <p style={{ color: "#9a9a9a", maxWidth: 720, margin: "0 auto 18px" }}>{mode === "review" ? "The packet is examined against VERA v3, the recovered no-assumption doctrine, and the selected RCS order-type rules." : "Upload one combined PDF or multiple PDF/TXT/MD title documents. The system builds a Run Sheet, then independently re-reads the documents to verify each row."}</p>
+        <label className="primary-pill" style={{ cursor: "pointer", display: "inline-block" }}>{busy ? (uploadPercent ? `Uploading ${uploadPercent}%…` : "Processing…") : "Choose file(s)"}<input type="file" accept=".pdf,.txt,.md" multiple={mode === "build"} hidden disabled={busy} onChange={(event) => void submitFiles(event.target.files)} /></label>
+        {busy ? <p style={{ marginTop: 14, color: "#bdbdbd", fontSize: 12 }}>{uploadPercent ? "Secure private upload in progress." : "OpenAI is reading the packet and running independent verification."}</p> : null}
+      </section> : null}
+
+      {exam ? <section style={{ marginTop: 18 }}>
+        <div style={{ ...panelStyle, display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+          <div><span className="eyebrow">VERA v3 review</span><h2 style={{ margin: "6px 0" }}>{exam.clientOrder !== "Not Provided" ? exam.clientOrder : exam.sourceFile}</h2><p style={{ margin: 0, color: "#9a9a9a" }}>{exam.propertyAddress}</p></div>
+          <div style={{ textAlign: "right" }}><strong style={{ fontSize: 28 }}>{verdict?.status.toUpperCase()}</strong><div style={{ color: "#9a9a9a", fontSize: 12 }}>{verdict?.failed} critical unresolved · {verdict?.pending} critical awaiting examiner decision</div></div>
+          <div style={{ display: "flex", gap: 8 }}><button className="text-button" onClick={approveCleanFindings}>Approve clean passes</button><button className="primary-pill" onClick={() => void downloadVeraDocx()}>Export VERA DOCX</button><button className="text-button" onClick={() => window.print()}>PDF</button></div>
+        </div>
+
+        <div style={{ marginTop: 18, display: "grid", gap: 12 }}>
+          {attentionFindings.map((finding) => <article key={finding.number} style={{ ...panelStyle, borderColor: finding.critical && !["PASS", "NOT_APPLICABLE"].includes(finding.status) ? "rgba(255,184,41,.45)" : "rgba(255,255,255,.09)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "start" }}>
+              <div><span className="eyebrow">Q{finding.number}{finding.critical ? " · CRITICAL" : ""}</span><h3 style={{ margin: "6px 0" }}>{finding.question}</h3></div>
+              <b>{statusLabel(finding.status)}</b>
+            </div>
+            <p><b>AI response:</b> {finding.response}</p>
+            <EvidenceList evidence={finding.evidence} />
+            <p style={{ color: "#bdbdbd", fontSize: 12 }}><b>Proof / Reason:</b> {finding.proofReason}</p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              <button className="text-button" onClick={() => setReviewDecision(finding.number, "APPROVED")}>Approve</button>
+              <button className="text-button" onClick={() => setReviewDecision(finding.number, "OVERRIDDEN")}>Override</button>
+              <button className="text-button" onClick={() => setReviewDecision(finding.number, "NEEDS_REVIEW")}>Needs review</button>
+              <span style={{ marginLeft: "auto", fontSize: 11, color: "#9a9a9a" }}>Examiner: {finding.reviewDecision || "PENDING"}</span>
+            </div>
+            {finding.reviewDecision === "OVERRIDDEN" ? <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "160px 1fr", gap: 8 }}>
+              <select value={finding.reviewerStatus || finding.status} onChange={(event) => patchFinding(finding.number, { reviewerStatus: event.target.value as FindingStatus })} style={inputStyle}>
+                {["PASS", "FAIL", "CANNOT_CONFIRM", "NOT_APPLICABLE", "NOT_STATED"].map((status) => <option key={status}>{status}</option>)}
+              </select>
+              <input value={finding.reviewerResponse || ""} onChange={(event) => patchFinding(finding.number, { reviewerResponse: event.target.value })} style={inputStyle} placeholder="Corrected examiner response" />
+              <div />
+              <input value={finding.reviewerReason || ""} onChange={(event) => patchFinding(finding.number, { reviewerReason: event.target.value })} style={inputStyle} placeholder="Override reason — required for the audit trail" />
+            </div> : null}
+          </article>)}
+        </div>
+      </section> : null}
+
+      {runSheet ? <section style={{ marginTop: 18 }}>
+        <div style={{ ...panelStyle, display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+          <div><span className="eyebrow">Generated Run Sheet</span><h2 style={{ margin: "6px 0" }}>{runSheet.propertyAddress}</h2><p style={{ margin: 0, color: "#9a9a9a" }}>{runSheet.buildSummary}</p></div>
+          <button className="primary-pill" onClick={downloadRunSheetCsv}>Export CSV</button>
+        </div>
+        {runSheet.requirementsReview.length ? <div style={{ ...panelStyle, marginTop: 12, borderColor: "rgba(255,184,41,.45)" }}><b>Requirements requiring examiner review</b>{runSheet.requirementsReview.map((item, index) => <p key={index} style={{ color: "#d7d7dc", fontSize: 12 }}>{item}</p>)}</div> : null}
+        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+          {runSheet.rows.map((row, index) => <details key={`${row.instrumentNumber}-${index}`} style={panelStyle} open={row.verificationStatus === "REVIEW"}>
+            <summary style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", gap: 12 }}><span><b>{row.sequence}. {row.category}</b> · {row.instrumentType} · {row.instrumentNumber}</span><b>{row.verificationStatus}</b></summary>
+            <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 8 }}>
+              {([
+                ["instrumentType", "Instrument Type"], ["documentDate", "Document Date"], ["recordingDate", "Recording Date"], ["instrumentNumber", "Instrument #"],
+                ["book", "Book"], ["page", "Page"], ["grantorBorrower", "Grantor / Borrower"], ["granteeBeneficiary", "Grantee / Beneficiary"],
+                ["amount", "Amount"], ["status", "Status"], ["legalDescriptionSummary", "Legal Description"], ["notes", "Notes"],
+              ] as Array<[keyof RunSheetRow, string]>).map(([key, label]) => <label key={key} style={{ display: "grid", gap: 5, fontSize: 10, color: "#9a9a9a" }}>{label}<input value={String(row[key] ?? "")} onChange={(event) => patchRunRow(index, key, event.target.value)} style={inputStyle} /></label>)}
+            </div>
+            <p style={{ fontSize: 11, color: row.verificationStatus === "VERIFIED" ? "#80d7c5" : "#ffb829" }}><b>Verification:</b> {row.verificationNote}</p>
+            <EvidenceList evidence={row.evidence} />
+          </details>)}
+        </div>
+        <p style={{ marginTop: 12, color: "#777", fontSize: 11 }}>MVP Run Sheet columns are evidence-first and export cleanly to CSV. The exact customer/RCS sheet column mapping can be swapped in when a sample production Run Sheet is supplied; the underlying extracted evidence does not change.</p>
+      </section> : null}
+
+      {(error || notice) ? <div className={`toast ${error ? "error" : "success"}`} role="status">{error || notice}</div> : null}
+    </div>
+
+    {exam ? <article className="document-preview printable-document" style={{ maxWidth: 850, margin: "0 auto 60px", background: "#fff", color: "#15161a", padding: 42 }}>
+      <header style={{ display: "flex", justifyContent: "space-between", gap: 18, borderBottom: "3px solid #8052ff", paddingBottom: 16 }}><Logo height={52} tone="letterhead" /><div style={{ textAlign: "right" }}><strong>Title Report Review Summary</strong><div style={{ fontSize: 10, color: "#667085" }}>VERA v3 · CybridTech Examiner</div></div></header>
+      <p><b>Search Type:</b> {exam.searchType}<br /><b>Client Order#:</b> {exam.clientOrder}<br /><b>Property Address:</b> {exam.propertyAddress}<br /><b>Search Effective Date:</b> {exam.searchEffectiveDate}<br /><b>MIN#:</b> {exam.minNumber}</p>
+      <h3>Property & Tax Information</h3>{exam.summaryEvidence.map((field, index) => <p key={index}><b>{field.field}:</b> {field.value}</p>)}
+      <h3>Required Question Responses</h3>{exam.findings.map((finding) => <div key={finding.number} style={{ marginBottom: 12 }}><b>{finding.number}. {finding.question}</b><div>Response: {finding.reviewDecision === "OVERRIDDEN" ? finding.reviewerResponse : finding.response}</div>{finding.evidence.map((evidence, index) => <div key={index} style={{ fontSize: 10, color: "#4e5562" }}>Evidence — {evidence.sourceFile ? `${evidence.sourceFile}, ` : ""}P{evidence.page}: “{evidence.quote}”</div>)}<div style={{ fontSize: 10 }}>Examiner decision: {finding.reviewDecision || "PENDING"}{finding.reviewDecision === "OVERRIDDEN" ? ` · ${finding.reviewerStatus} · ${finding.reviewerReason}` : ""}</div></div>)}
+      <h3>Title Report / Run Sheet Accuracy Audit</h3><p>Vesting Deed Information: {exam.audit.vestingDeed}<br />Chain of Title: {exam.audit.chainOfTitle}<br />Mortgage Information: {exam.audit.mortgageInformation}<br />Tax Information: {exam.audit.taxInformation}<br />Judgments and Liens: {exam.audit.judgmentsAndLiens}<br />Easements and Restrictions: {exam.audit.easementsAndRestrictions}</p>
+      <h3>Pass/Fail Determination</h3><p><b>Status:</b> {verdict?.status}<br /><b>Automated reason:</b> {exam.reason}<br /><b>Notes:</b> {exam.notes || "None"}</p>
+    </article> : null}
   </main>;
 }
