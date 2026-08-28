@@ -1,11 +1,20 @@
 import { NextRequest } from "next/server";
 import { AlignmentType, Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
-import type { AuditFinding, EvidenceRef, FieldEvidence, VeraExam } from "@/lib/vera";
+import type { AuditFinding, EvidenceRef, FieldEvidence, FindingStatus, VeraExam } from "@/lib/vera";
+import { checkExaminerAccess } from "@/lib/examiner-auth";
 
 export const runtime = "nodejs";
 
 function text(value: unknown): string {
   return String(value ?? "").trim() || "Not Stated";
+}
+
+function effectiveStatus(finding: AuditFinding): FindingStatus {
+  return finding.reviewDecision === "OVERRIDDEN" && finding.reviewerStatus ? finding.reviewerStatus : finding.status;
+}
+
+function effectiveResponse(finding: AuditFinding): string {
+  return finding.reviewDecision === "OVERRIDDEN" && finding.reviewerResponse ? finding.reviewerResponse : finding.response;
 }
 
 function evidenceParagraphs(evidence: EvidenceRef[]): Paragraph[] {
@@ -27,15 +36,15 @@ function fieldBlock(field: FieldEvidence): Paragraph[] {
 }
 
 function findingBlock(finding: AuditFinding): Paragraph[] {
+  const reviewer = finding.reviewDecision || "PENDING";
   return [
-    new Paragraph({
-      heading: HeadingLevel.HEADING_3,
-      children: [new TextRun({ text: `${finding.number}. ${finding.question}`, bold: true })],
-    }),
-    new Paragraph({ children: [new TextRun({ text: "Response: ", bold: true }), new TextRun(text(finding.response))] }),
+    new Paragraph({ heading: HeadingLevel.HEADING_3, children: [new TextRun({ text: `${finding.number}. ${finding.question}`, bold: true })] }),
+    new Paragraph({ children: [new TextRun({ text: "Response: ", bold: true }), new TextRun(text(effectiveResponse(finding)))] }),
     ...evidenceParagraphs(finding.evidence),
-    ...(finding.critical ? [new Paragraph({ children: [new TextRun({ text: "Status: ", bold: true }), new TextRun(finding.status === "PASS" || finding.status === "NOT_APPLICABLE" ? "PASS" : "FAIL")] })] : []),
+    ...(finding.critical ? [new Paragraph({ children: [new TextRun({ text: "Status: ", bold: true }), new TextRun(["PASS", "NOT_APPLICABLE"].includes(effectiveStatus(finding)) ? "PASS" : "FAIL")] })] : []),
     new Paragraph({ children: [new TextRun({ text: "Proof/Reason: ", bold: true }), new TextRun(text(finding.proofReason))] }),
+    new Paragraph({ children: [new TextRun({ text: "Examiner Decision: ", bold: true }), new TextRun(reviewer)] }),
+    ...(finding.reviewDecision === "OVERRIDDEN" ? [new Paragraph({ children: [new TextRun({ text: "Override Reason: ", bold: true }), new TextRun(text(finding.reviewerReason))] })] : []),
     ...(finding.commentary ? [new Paragraph({ children: [new TextRun({ text: "Commentary: ", bold: true }), new TextRun(finding.commentary)] })] : []),
   ];
 }
@@ -59,8 +68,18 @@ function metaTable(exam: VeraExam): Table {
 
 export async function POST(request: NextRequest) {
   try {
+    const access = checkExaminerAccess(request);
+    if (!access.ok) return Response.json({ error: access.error }, { status: access.status });
     const exam = await request.json() as VeraExam;
     if (!exam || !Array.isArray(exam.findings)) return Response.json({ error: "A completed VERA review is required." }, { status: 400 });
+
+    const critical = exam.findings.filter((finding) => finding.critical);
+    const unresolved = critical.filter((finding) => !["PASS", "NOT_APPLICABLE"].includes(effectiveStatus(finding)));
+    const finalStatus = unresolved.length ? "Fail" : "Pass";
+    const pending = critical.filter((finding) => !finding.reviewDecision || finding.reviewDecision === "PENDING" || finding.reviewDecision === "NEEDS_REVIEW");
+    const finalReason = pending.length
+      ? `${pending.length} critical finding(s) still await examiner disposition. Automated basis: ${exam.reason}`
+      : finalStatus === "Pass" ? "All applicable critical findings are supported or examiner-approved." : `${unresolved.length} critical finding(s) remain unresolved after examiner review.`;
 
     const children: Array<Paragraph | Table> = [
       new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "CYBRIDTECH SOLUTIONS", bold: true, size: 30 })] }),
@@ -78,9 +97,9 @@ export async function POST(request: NextRequest) {
       new Paragraph(`Judgments and Liens: ${text(exam.audit.judgmentsAndLiens)}`),
       new Paragraph(`Easements and Restrictions: ${text(exam.audit.easementsAndRestrictions)}`),
       new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: "Pass/Fail Determination", bold: true })] }),
-      new Paragraph({ children: [new TextRun({ text: "Status: ", bold: true }), new TextRun(text(exam.status))] }),
-      new Paragraph({ children: [new TextRun({ text: "Reason: ", bold: true }), new TextRun(text(exam.reason))] }),
-      new Paragraph({ children: [new TextRun({ text: "Confirmation: ", bold: true }), new TextRun(text(exam.confirmation))] }),
+      new Paragraph({ children: [new TextRun({ text: "Status: ", bold: true }), new TextRun(finalStatus)] }),
+      new Paragraph({ children: [new TextRun({ text: "Reason: ", bold: true }), new TextRun(finalReason)] }),
+      new Paragraph({ children: [new TextRun({ text: "Confirmation: ", bold: true }), new TextRun(finalStatus === "Pass" && pending.length === 0 ? "The document meets all currently loaded quality standards with no unresolved critical issues." : "The document contains issues or pending examiner decisions identified above and does not yet meet final quality standards.")] }),
       new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: "Notes / Comments", bold: true })] }),
       new Paragraph(text(exam.notes || "None")),
       new Paragraph({ children: [new TextRun({ text: `Prepared ${new Date(exam.extractedAt || Date.now()).toLocaleString()} · CybridTech Examiner · VERA v3 structure`, italics: true, size: 18 })] }),
