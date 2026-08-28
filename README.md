@@ -9,8 +9,10 @@ The production architecture uses the OpenAI Responses API directly for PDF and t
 Core behavior:
 
 - OpenAI multimodal PDF reading for native-text and scanned/image pages
-- GPT-5.6 Sol by default (`gpt-5.6-sol`)
-- two independent audit passes; status disagreements become `CANNOT_CONFIRM`
+- GPT-5.6 Luna by default (`gpt-5.6-luna`) for high-volume cost control
+- two independent Luna audit passes; status disagreements become `CANNOT_CONFIRM`
+- no automatic Terra or Sol escalation
+- premium model overrides are blocked unless `OPENAI_ALLOW_PREMIUM_MODEL=true` is explicitly set
 - exact quote + physical PDF page evidence for every supported finding
 - 20 VERA audit questions with critical Q4–12 and Q17–20 driving the overall verdict
 - no-assumption / evidence-first CybridTech audit doctrine
@@ -28,12 +30,22 @@ Set this in Vercel (and `.env.local` for local development):
 OPENAI_API_KEY=...
 ```
 
-Optional model overrides:
+The production code forces the low-cost defaults unless premium use is explicitly unlocked:
 
 ```bash
-OPENAI_DOCUMENT_MODEL=gpt-5.6-sol
-OPENAI_VERIFY_MODEL=gpt-5.6-sol
+OPENAI_DOCUMENT_MODEL=gpt-5.6-luna
+OPENAI_VERIFY_MODEL=gpt-5.6-luna
 ```
+
+Optional premium override, disabled by default:
+
+```bash
+OPENAI_ALLOW_PREMIUM_MODEL=true
+```
+
+Only enable that intentionally after changing `OPENAI_DOCUMENT_MODEL` / `OPENAI_VERIFY_MODEL`. The normal production path does not call Terra or Sol automatically.
+
+See `docs/COST_POLICY.md` for the cost guardrails.
 
 No Azure Document Intelligence resource is required.
 
