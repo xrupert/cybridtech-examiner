@@ -1,6 +1,6 @@
 {
   "name": "cybridtech-examiner",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -8,6 +8,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
+    "docx": "^9.7.1",
     "next": "^15.4.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

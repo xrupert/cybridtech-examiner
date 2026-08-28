@@ -3,12 +3,14 @@ export type LoanStatus = "Active" | "Default" | "Satisfied" | "Not Provided";
 export type PassFail = "Pass" | "Fail";
 export type FindingStatus = "UNDETERMINED" | "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE" | "NOT_STATED";
 export type EvidenceSource = "native" | "openai-file" | "pasted";
+export type ReviewDecision = "PENDING" | "APPROVED" | "OVERRIDDEN" | "NEEDS_REVIEW";
 
 export interface EvidenceRef {
   quote: string;
   page: number;
   documentType: string;
   source: EvidenceSource;
+  sourceFile?: string;
   confidence?: number;
   instrumentNumber?: string;
 }
@@ -30,6 +32,10 @@ export interface AuditFinding {
   evidence: EvidenceRef[];
   proofReason: string;
   commentary?: string;
+  reviewDecision?: ReviewDecision;
+  reviewerResponse?: string;
+  reviewerStatus?: FindingStatus;
+  reviewerReason?: string;
 }
 
 export interface PageEvidence {
@@ -135,7 +141,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
   return {
     state: "TX",
     county: "Not Stated",
-    searchType: "General Search",
+    searchType: "Foreclosure",
     clientOrder: "Not Provided",
     propertyAddress: "Not Provided",
     searchEffectiveDate: "Not Provided",
@@ -178,7 +184,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     criticalPassRate: 0,
     manualReviewRequired: false,
     extractionSummary: "Not yet examined",
-    rulePackStatus: "Recovered owner audit doctrine loaded; authoritative source documents still required for exact search-type/state rule packs.",
+    rulePackStatus: "VERA v3 + RCS Foreclosure/2nd Lien/Current Owner MVP rules loaded. Quick Reference Checklist and Legal Description Compliance Protocol still pending.",
     status: "Fail",
     reason: "Not yet examined",
     confirmation: "The review is not complete.",
