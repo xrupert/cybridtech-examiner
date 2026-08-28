@@ -184,7 +184,7 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     criticalPassRate: 0,
     manualReviewRequired: false,
     extractionSummary: "Not yet examined",
-    rulePackStatus: "VERA v3 + RCS Foreclosure/2nd Lien/Current Owner MVP rules loaded. Quick Reference Checklist and Legal Description Compliance Protocol still pending.",
+    rulePackStatus: "VERA v3 + RCS Foreclosure/2nd Lien/Current Owner rules + Quick Reference Checklist + Legal Description Compliance Protocol loaded.",
     status: "Fail",
     reason: "Not yet examined",
     confirmation: "The review is not complete.",
