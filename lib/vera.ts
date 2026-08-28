@@ -4,6 +4,18 @@ export type PassFail = "Pass" | "Fail";
 export type FindingStatus = "UNDETERMINED" | "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE" | "NOT_STATED";
 export type EvidenceSource = "native" | "openai-file" | "pasted";
 export type ReviewDecision = "PENDING" | "APPROVED" | "OVERRIDDEN" | "NEEDS_REVIEW";
+export type DocumentExtractionMode = "native-text" | "openai-pdf-fallback" | "pasted-text";
+
+export interface DocumentEngineMetadata {
+  packetHash: string;
+  pageCount: number;
+  extractionMode: DocumentExtractionMode;
+  extractionCacheHit: boolean;
+  textCoverage: number;
+  lowTextPages: number[];
+  extractionMs: number;
+  modelMs: number;
+}
 
 export interface EvidenceRef {
   quote: string;
@@ -135,6 +147,13 @@ export interface VeraExam {
   sourceFile: string;
   extractedAt: string;
   rawExcerpt: string;
+  packetHash: string;
+  packetPageCount: number;
+  reviewId: string;
+  matterKey: string;
+  matterRevision: number;
+  matterIdentityKeys: string[];
+  documentEngine: DocumentEngineMetadata;
 }
 
 export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
@@ -192,6 +211,22 @@ export function emptyVera(partial: Partial<VeraExam> = {}): VeraExam {
     sourceFile: "upload",
     extractedAt: new Date().toISOString(),
     rawExcerpt: "",
+    packetHash: "",
+    packetPageCount: 0,
+    reviewId: "",
+    matterKey: "",
+    matterRevision: 0,
+    matterIdentityKeys: [],
+    documentEngine: {
+      packetHash: "",
+      pageCount: 0,
+      extractionMode: "pasted-text",
+      extractionCacheHit: false,
+      textCoverage: 0,
+      lowTextPages: [],
+      extractionMs: 0,
+      modelMs: 0,
+    },
     ...partial,
   };
 }
