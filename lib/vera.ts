@@ -3,6 +3,7 @@ export type LoanStatus = "Active" | "Default" | "Satisfied" | "Not Provided";
 export type PassFail = "Pass" | "Fail";
 export type FindingStatus = "UNDETERMINED" | "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE" | "NOT_STATED";
 export type EvidenceSource = "native" | "openai-file" | "pasted";
+export type ReviewDecision = "PENDING" | "APPROVED" | "OVERRIDDEN" | "NEEDS_REVIEW";
 
 export interface EvidenceRef {
   quote: string;
@@ -31,6 +32,10 @@ export interface AuditFinding {
   evidence: EvidenceRef[];
   proofReason: string;
   commentary?: string;
+  reviewDecision?: ReviewDecision;
+  reviewerResponse?: string;
+  reviewerStatus?: FindingStatus;
+  reviewerReason?: string;
 }
 
 export interface PageEvidence {
