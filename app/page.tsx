@@ -6,26 +6,27 @@ export default function HomePage() {
   return (
     <main className="site-shell">
       <header className="site-nav">
-        <Link href="/" className="site-brand" aria-label="CybridTech Examiner home">
-          <Logo height={44} />
+        <Link href="/" className="site-brand" aria-label="Cybrid Title home" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <Logo height={40} />
+          <strong style={{ color: "#fff", letterSpacing: ".08em", fontSize: 15 }}>CYBRID TITLE</strong>
         </Link>
         <nav className="site-nav-links" aria-label="Primary navigation">
           <a href="#workflow">Workflow</a>
           <a href="#review">Review standard</a>
-          <Link className="primary-pill" href="/examine">Open workbench</Link>
+          <Link className="primary-pill" href="/examine">Open Cybrid Title</Link>
         </nav>
       </header>
 
       <section className="marketing-hero">
         <div className="hero-copy">
           <p className="eyebrow">Title examination, structured</p>
-          <h1>Every title report has an answer. Find it without the scavenger hunt.</h1>
+          <h1>The packet is the evidence. The review should make that obvious.</h1>
           <p className="hero-lede">
-            Upload one report or a full packet. CybridTech Examiner extracts the review fields, runs a second-pass critic, and gives your team a clean Vera-style review that is ready to verify and deliver.
+            Cybrid Title reviews an existing title-report packet against VERA v3 and the loaded RCS rules, or builds a verified Run Sheet from the recorded title documents themselves.
           </p>
           <div className="hero-actions">
-            <Link className="primary-pill" href="/examine">Open the examiner</Link>
-            <a className="text-action" href="#workflow">See how it moves</a>
+            <Link className="primary-pill" href="/examine">Open the workbench</Link>
+            <a className="text-action" href="#workflow">See the workflow</a>
           </div>
         </div>
         <div className="hero-visual" aria-hidden="true">
@@ -41,16 +42,16 @@ export default function HomePage() {
       <section className="statement-section" id="workflow">
         <p className="eyebrow">The workflow</p>
         <div className="statement-grid">
-          <h2>One upload. A complete review path.</h2>
+          <h2>One packet in. One defensible review out.</h2>
           <div className="statement-copy">
             <p>
-              The workbench keeps the source packet, the editable examiner answers, the critic verdict, and the finished client-facing review in one place. Bulk uploads become a queue instead of a pile of browser tabs.
+              Upload a complete title-report packet, select the state and order type, review the exceptions first, approve or override findings, and export the finished VERA document.
             </p>
             <div className="step-list" aria-label="Workflow steps">
-              <span><b>01</b> Upload PDF, text, or a batch</span>
-              <span><b>02</b> Review every extracted response</span>
-              <span><b>03</b> Re-run the critic after corrections</span>
-              <span><b>04</b> Export branded PDF or Word output</span>
+              <span><b>01</b> Upload the packet</span>
+              <span><b>02</b> Read and verify the complete evidence</span>
+              <span><b>03</b> Resolve exceptions</span>
+              <span><b>04</b> Export VERA v3</span>
             </div>
           </div>
         </div>
@@ -59,21 +60,21 @@ export default function HomePage() {
       <section className="statement-section" id="review">
         <p className="eyebrow">The review standard</p>
         <div className="statement-grid reverse">
-          <h2>The machine proposes. The examiner owns the answer.</h2>
+          <h2>No evidence, no supported answer.</h2>
           <div className="statement-copy">
             <p>
-              Extraction is a first pass, not a permission slip. Each field remains editable, missing information stays visible, and the final Pass or Fail can be re-evaluated after the human review is complete.
+              Every supported conclusion carries source evidence and a physical PDF page. Missing or ambiguous proof becomes Cannot Confirm instead of an invented answer. The examiner can approve, override, or hold a finding for review without destroying the original AI result.
             </p>
             <p className="quiet-copy">
-              The interface is intentionally sparse: black canvas, one saturated action color, oversized type, and a single procedural constellation. The document itself is the one place the screen becomes white paper.
+              During testing, Cybrid Title runs without the temporary access-code gate. User login and an admin usage dashboard will replace that test mode before customer access and pricing are enabled.
             </p>
           </div>
         </div>
       </section>
 
       <section className="closing-section">
-        <p className="eyebrow">CybridTech Examiner</p>
-        <h2>Turn the packet into a professional review.</h2>
+        <p className="eyebrow">Cybrid Title</p>
+        <h2>Upload the title report. Get the review.</h2>
         <Link className="primary-pill" href="/examine">Open workbench</Link>
       </section>
     </main>
