@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { get, put } from "@vercel/blob";
 
 export type ExtractionMode = "native-text" | "openai-pdf-fallback";
+export type DetectedSearchType = "Foreclosure" | "2nd Lien" | "Current Owner Search" | "Two Owner Search";
+
+export interface SearchTypeDetection {
+  searchType: DetectedSearchType | null;
+  confidence: "high" | "low";
+  evidence: string;
+}
 
 export interface ExtractedPage {
   page: number;
@@ -116,6 +123,39 @@ function markFunctionalRunSheetPages(pages: ExtractedPage[]): void {
   for (let index = seedIndex; index <= endIndex; index += 1) {
     opening[index].documentHint = "Run Sheet / Title Summary";
   }
+}
+
+function searchTypeFromOpeningText(text: string): SearchTypeDetection {
+  const compact = compactWhitespace(text).slice(0, 30000);
+  const labeled = compact.match(/\b(?:search\s*type|order\s*type)\s*[:\-]?\s*([^|]{0,80})/i)?.[1] || compact;
+  const candidates: Array<{ type: DetectedSearchType; pattern: RegExp }> = [
+    { type: "Two Owner Search", pattern: /\b(?:2|two)\s*[- ]?owner(?:\s+search)?\b/i },
+    { type: "2nd Lien", pattern: /\b(?:2nd|second)\s*[- ]?lien(?:\s+search)?\b/i },
+    { type: "Current Owner Search", pattern: /\bcurrent\s+owner(?:\s+search)?\b/i },
+    { type: "Foreclosure", pattern: /\bforeclosure(?:\s+search)?\b/i },
+  ];
+
+  for (const candidate of candidates) {
+    const match = labeled.match(candidate.pattern);
+    if (match) return { searchType: candidate.type, confidence: "high", evidence: match[0] };
+  }
+
+  // If the labeled region did not survive text extraction cleanly, use only the opening
+  // title-summary text. Do not infer from supporting instruments deeper in the packet.
+  for (const candidate of candidates) {
+    const match = compact.match(candidate.pattern);
+    if (match) return { searchType: candidate.type, confidence: "high", evidence: match[0] };
+  }
+
+  return {
+    searchType: null,
+    confidence: "low",
+    evidence: "No supported order/search type was stated clearly in the opening title-summary pages.",
+  };
+}
+
+export function detectSearchTypeFromText(text: string): SearchTypeDetection {
+  return searchTypeFromOpeningText(text);
 }
 
 async function loadCachedLedger(packetHash: string): Promise<PacketExtractionLedger | null> {
@@ -269,4 +309,14 @@ export async function preparePdfPacket(buffer: ArrayBuffer, sourceFile: string):
     pageDelimitedText: ledger.nativeTextReady ? pageDelimitedText(ledger) : undefined,
     extractionMs: Date.now() - started,
   };
+}
+
+export async function detectPdfSearchType(buffer: ArrayBuffer, sourceFile: string): Promise<SearchTypeDetection> {
+  const prepared = await preparePdfPacket(buffer, sourceFile);
+  const opening = prepared.ledger.pages
+    .filter((page) => page.page <= MAX_FRONT_SUMMARY_PAGE)
+    .map((page) => page.text)
+    .filter(Boolean)
+    .join("\n");
+  return searchTypeFromOpeningText(opening);
 }
