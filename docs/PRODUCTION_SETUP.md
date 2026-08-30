@@ -1,52 +1,54 @@
-# Production Setup
+# Production / Demo Setup
 
-The code fails closed until the paid AI endpoint and access protection are configured.
+A Vercel deployment being READY proves the application built; it does not prove paid document review is configured.
 
-## Required
+## Current demo environment
 
-In the Vercel project environment, configure:
+The current testing/demo deployment intentionally uses the examiner-auth bypass. Review should report:
+
+- `openAIConfigured: true`
+- `openAIKeyAliasAccepted: true` when the existing `OPEN_AI_KEY` is used
+- `largeFileStorageConfigured: true`
+- `authenticationMode: testing-bypass`
+- Review model `gpt-5.6-sol`
+- one full-packet Review model pass
+- deterministic server evidence critic
+
+The application accepts either `OPENAI_API_KEY` or the existing alias:
 
 ```bash
-OPENAI_API_KEY=...
-EXAMINER_ACCESS_CODE=...
+OPEN_AI_KEY=...
 ```
 
-Do not commit either value to GitHub.
+Do not rename or expose a working key merely to satisfy documentation.
 
 ## Large title packets
 
-Create a **private Vercel Blob store** attached to the project. Vercel supplies the project environment credential used by the upload code:
+Production-sized files use the private Vercel Blob store already attached to the project:
 
 ```bash
 BLOB_READ_WRITE_TOKEN=...
 ```
 
-Without Blob storage the UI deliberately limits direct uploads to small files because Vercel Functions have a request-body limit that many title packets exceed.
+The browser uploads directly to private Blob storage and the processing route deletes the temporary object after ingestion.
 
-## Model defaults
+## Customer production authentication
 
-No additional model setting is required. The application forces the cost-controlled default unless premium usage is deliberately enabled:
+The testing bypass is not customer-production security. Before external launch, replace the temporary access-code/bypass mechanism with real user/tenant/admin authentication and role checks. Do not rely on `EXAMINER_ACCESS_CODE` as the final customer identity architecture.
 
-```bash
-OPENAI_DOCUMENT_MODEL=gpt-5.6-luna
-OPENAI_VERIFY_MODEL=gpt-5.6-luna
-```
+## Model policy
 
-Do not enable `OPENAI_ALLOW_PREMIUM_MODEL=true` for the normal production path.
+Review currently uses GPT-5.6 Sol because the earlier two-pass full-PDF design produced unacceptable latency/rate pressure. The Review path is one Sol pass followed by the deterministic server critic.
 
-## Readiness
+Build Run Sheet currently uses its separate cost policy and still performs two independent builds; it is an architecture convergence item, not evidence that Review runs two passes.
+
+## Readiness checks
 
 Check:
 
 - `GET /api/examine`
 - `GET /api/run-sheet`
 
-Before real testing they should report:
+For the current demo, `/api/examine` should report OpenAI and Blob ready, state/order auto-detection enabled, testing authentication bypass, one Review model pass, and deterministic verification.
 
-- `openAIConfigured: true`
-- `accessProtectionConfigured: true`
-- `largeFileStorageConfigured: true` for production-sized packets
-- model `gpt-5.6-luna`
-- `verificationPasses: 2`
-
-A READY Vercel deployment does not prove the AI workflow is configured; these readiness fields do.
+See `ARCHITECTURE_READINESS_AUDIT.md` before treating the deployment as production-accurate.
