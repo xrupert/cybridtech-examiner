@@ -1,7 +1,9 @@
-import { VeraExam, type AuditFinding } from "./vera";
+import { VeraExam, type AuditFinding, type PacketDocument } from "./vera";
 import { CRITICAL_QUESTION_NUMBERS, isSupportedSearchType } from "./audit-rules";
+import { detectRunSheet, type RunSheetDetection } from "./run-sheet-detection";
 
 const acceptable = new Set(["PASS", "NOT_APPLICABLE"]);
+const unresolved = new Set(["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"]);
 
 function evidenceIsUsable(finding: AuditFinding): boolean {
   return finding.evidence.some((evidence) =>
@@ -13,26 +15,50 @@ function evidenceIsUsable(finding: AuditFinding): boolean {
   );
 }
 
-function hasDistinctRunSheet(exam: VeraExam): boolean {
-  return exam.documents.some((document) => {
-    const type = (document.documentType || "").toLowerCase();
-    const excerpt = (document.excerpt || "").toLowerCase();
-    if (type.includes("title report")) return false;
-    if (type.includes("run sheet") || type.includes("abstractor sheet")) return true;
-    return /\brun sheet\b|\babstractor sheet\b/.test(excerpt);
-  });
+function mersOrMinNotApplicable(exam: VeraExam): boolean {
+  const q9 = exam.findings.find((finding) => finding.number === 9);
+  const text = `${exam.minNumber || ""} ${q9?.response || ""}`.toLowerCase();
+  const noMin = !exam.minNumber || /not provided|not stated|not applicable|n\/a/.test(exam.minNumber.toLowerCase());
+  const noMers = /mers is not|mers not|not mers|original lender|not applicable/.test(text);
+  return noMin && noMers;
 }
 
-function normalizeRunSheetApplicability(exam: VeraExam, finding: AuditFinding): AuditFinding {
-  if (![19, 20].includes(finding.number) || hasDistinctRunSheet(exam)) return finding;
-  return {
-    ...finding,
-    status: "NOT_APPLICABLE",
-    response: "Not applicable — no separate Run Sheet or Abstractor Sheet was supplied in this review packet.",
-    evidence: [],
-    proofReason: "VERA Q19-Q20 apply only when a distinct Run Sheet/Abstractor Sheet is supplied. The title report itself is not treated as a Run Sheet.",
-    commentary: "No examiner action is required for this question unless the order instructions separately required a Run Sheet to be included.",
-  };
+function normalizeRunSheetApplicability(exam: VeraExam, finding: AuditFinding, detection: RunSheetDetection): AuditFinding {
+  if (![19, 20].includes(finding.number)) return finding;
+
+  if (detection.detected) {
+    if (finding.number === 19 && finding.status === "NOT_APPLICABLE" && mersOrMinNotApplicable(exam)) {
+      return {
+        ...finding,
+        response: "Not applicable — the Run Sheet is present, but no applicable MERS MIN is established for this loan.",
+        proofReason: `${detection.reason} Q19 is N/A because the packet does not establish an applicable MERS MIN, not because the Run Sheet is absent.`,
+      };
+    }
+    if (finding.status !== "NOT_APPLICABLE") return finding;
+    return {
+      ...finding,
+      status: "CANNOT_CONFIRM",
+      response: finding.number === 19
+        ? "Run Sheet detected, but the MIN check was not completed against it."
+        : "Run Sheet detected, but its entries were not fully reconciled against the supporting documents.",
+      proofReason: `${detection.reason} Q${finding.number} cannot be treated as N/A; the Run Sheet must be checked against the packet.`,
+      commentary: "Run Sheet identification is functional and structural, not dependent on a literal heading or a separate file.",
+    };
+  }
+
+  // No literal label is not proof of absence. If structure is ambiguous, keep Q19/Q20 open.
+  if (finding.status === "NOT_APPLICABLE") {
+    return {
+      ...finding,
+      status: "CANNOT_CONFIRM",
+      response: "Cannot Confirm — Cybrid Title could not confidently identify the Run Sheet section from the returned packet structure.",
+      evidence: finding.evidence,
+      proofReason: `${detection.reason} Q${finding.number} remains open because a front-of-packet summary/index can function as the Run Sheet even when it is not separately labeled.`,
+      commentary: "Examiner review is required instead of silently waiving the Run Sheet check.",
+    };
+  }
+
+  return finding;
 }
 
 function enforceEvidence(finding: AuditFinding): AuditFinding {
@@ -49,11 +75,82 @@ function enforceEvidence(finding: AuditFinding): AuditFinding {
   return finding;
 }
 
+function uniqueEvidence(findings: AuditFinding[]) {
+  const seen = new Set<string>();
+  return findings.flatMap((finding) => finding.evidence).filter((evidence) => {
+    const key = `${evidence.page}|${evidence.documentType}|${evidence.quote}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function reconcileRunSheetAccuracy(findings: AuditFinding[], detection: RunSheetDetection): AuditFinding[] {
+  if (!detection.detected) return findings;
+  const target = findings.find((finding) => finding.number === 20);
+  if (!target || target.status !== "CANNOT_CONFIRM" || !/run sheet detected|run sheet section/i.test(`${target.response} ${target.proofReason}`)) return findings;
+
+  // Q20 is the roll-up of the title-summary/Run-Sheet facts already checked against source
+  // documents in the core reconciliation questions. Do not invent a second set of facts.
+  const sourceChecks = findings.filter((finding) => [4, 5, 7, 8, 17].includes(finding.number));
+  const failed = sourceChecks.filter((finding) => finding.status === "FAIL");
+  const uncertain = sourceChecks.filter((finding) => unresolved.has(finding.status));
+
+  let replacement: AuditFinding;
+  if (failed.length) {
+    replacement = {
+      ...target,
+      status: "FAIL",
+      response: `Run Sheet is not accurate. Source reconciliation found discrepancies in ${failed.map((finding) => `Q${finding.number}`).join(", ")}.`,
+      evidence: uniqueEvidence(failed),
+      proofReason: `${detection.reason} The Run Sheet accuracy roll-up inherits the grounded discrepancies from ${failed.map((finding) => `Q${finding.number}: ${finding.proofReason}`).join(" | ")}`,
+      commentary: "Q20 is grounded in the same source-document comparisons used for deed/mortgage data, recordings, assignment vesting, legal description, and material report errors.",
+    };
+  } else if (uncertain.length) {
+    replacement = {
+      ...target,
+      status: "CANNOT_CONFIRM",
+      response: `Cannot Confirm Run Sheet accuracy because ${uncertain.map((finding) => `Q${finding.number}`).join(", ")} remain unresolved.`,
+      evidence: uniqueEvidence(uncertain),
+      proofReason: `${detection.reason} Run Sheet accuracy cannot pass until the unresolved source comparisons are resolved.`,
+    };
+  } else {
+    replacement = {
+      ...target,
+      status: "PASS",
+      response: "Run Sheet is accurate based on the grounded source-document reconciliation checks.",
+      evidence: uniqueEvidence(sourceChecks),
+      proofReason: `${detection.reason} Core Run Sheet fields reconcile through Q4, Q5, Q7, Q8, and Q17 with no unresolved discrepancy.`,
+    };
+  }
+
+  return findings.map((finding) => finding.number === 20 ? enforceEvidence(replacement) : finding);
+}
+
+function documentsWithFunctionalRunSheet(exam: VeraExam, detection: RunSheetDetection): PacketDocument[] {
+  if (!detection.detected) return exam.documents;
+  const alreadyExplicit = exam.documents.some((document) => /\b(run\s*sheet|abstractor\s*sheet|search\s*sheet|title\s*worksheet)\b/i.test(document.documentType || ""));
+  if (alreadyExplicit) return exam.documents;
+
+  return [
+    ...exam.documents,
+    {
+      documentType: "Run Sheet (functional title-summary section)",
+      pageStart: detection.pageStart || 1,
+      pageEnd: detection.pageEnd || detection.pageStart || 1,
+      excerpt: detection.reason,
+    },
+  ].sort((a, b) => a.pageStart - b.pageStart);
+}
+
 export function critique(exam: VeraExam): VeraExam {
   const seen = new Set<number>();
-  const findings = exam.findings
-    .map((finding) => normalizeRunSheetApplicability(exam, finding))
+  const runSheetDetection = detectRunSheet(exam);
+  let findings = exam.findings
+    .map((finding) => normalizeRunSheetApplicability(exam, finding, runSheetDetection))
     .map(enforceEvidence);
+  findings = reconcileRunSheetAccuracy(findings, runSheetDetection);
+
   const malformedQuestions = findings.filter((finding) => {
     const invalid = finding.number < 1 || finding.number > 20 || seen.has(finding.number);
     seen.add(finding.number);
@@ -73,10 +170,11 @@ export function critique(exam: VeraExam): VeraExam {
   if (structuralFailure) reasons.unshift(`VERA structure invalid: expected exactly one finding for Q1-Q20${missingQuestionNumbers.length ? `; missing ${missingQuestionNumbers.join(", ")}` : ""}.`);
   if (!supportedSearchType) reasons.unshift(`Unsupported MVP search type: ${exam.searchType}.`);
 
-  const manualReviewRequired = exam.manualReviewRequired || structuralFailure || !supportedSearchType || failed.some((finding) => finding.status === "CANNOT_CONFIRM" || finding.status === "UNDETERMINED" || finding.status === "NOT_STATED");
+  const manualReviewRequired = exam.manualReviewRequired || structuralFailure || !supportedSearchType || failed.some((finding) => unresolved.has(finding.status));
 
   return {
     ...exam,
+    documents: documentsWithFunctionalRunSheet(exam, runSheetDetection),
     findings,
     status,
     criticalPassRate,
