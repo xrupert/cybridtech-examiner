@@ -1,4 +1,4 @@
-import type { AuditFinding, PacketDocument, VeraExam } from "./vera";
+import type { AuditFinding, PacketDocument, PageEvidence, VeraExam } from "./vera";
 
 export type RunSheetDetection = {
   detected: boolean;
@@ -9,6 +9,7 @@ export type RunSheetDetection = {
 };
 
 const explicitRunSheet = /\b(run\s*sheet|abstractor\s*sheet|search\s*sheet|title\s*worksheet)\b/i;
+const titleSummaryType = /title\s*(report|search|summary)|search\s*report|abstractor|title\s*information/i;
 const summarySignals = [
   /\bclient\s*order\b/i,
   /\bsearch\s*effective\b/i,
@@ -23,6 +24,7 @@ const summarySignals = [
   /\bbook\s*\/?\s*page\b|\bbook\b.*\bpage\b/i,
   /\brecord(?:ed|ing)?\s*date\b/i,
   /\bparcel\b/i,
+  /\bgrantor\b|\bgrantee\b|\bborrower\b|\bbeneficiary\b/i,
 ];
 
 function structuralScore(text: string): number {
@@ -33,15 +35,17 @@ function documentLooksLikeFunctionalRunSheet(document: PacketDocument): boolean 
   const type = document.documentType || "";
   const excerpt = document.excerpt || "";
   const combined = `${type}\n${excerpt}`;
-
   if (explicitRunSheet.test(combined)) return true;
 
-  // A Run Sheet is a function, not necessarily a heading. Many title packages begin with
-  // one or more summary/index pages inside the title report itself, followed by the source
-  // instruments those pages were built from. Those front summary pages still count.
   const earlyInPacket = document.pageStart <= 8;
-  const titleSummaryLike = /title\s*(report|search|summary)|search\s*report|abstractor/i.test(type);
-  return earlyInPacket && titleSummaryLike && structuralScore(combined) >= 4;
+  return earlyInPacket && titleSummaryType.test(type) && structuralScore(combined) >= 4;
+}
+
+function pageLooksLikeFunctionalRunSheet(page: PageEvidence): boolean {
+  if (page.page > 8) return false;
+  const combined = `${page.documentType || ""}\n${page.text || ""}`;
+  if (explicitRunSheet.test(combined)) return true;
+  return titleSummaryType.test(page.documentType || "") && structuralScore(combined) >= 3;
 }
 
 function findingEvidenceLooksLikeRunSheet(finding: AuditFinding): boolean {
@@ -49,11 +53,11 @@ function findingEvidenceLooksLikeRunSheet(finding: AuditFinding): boolean {
   return finding.evidence.some((evidence) => {
     const combined = `${evidence.documentType || ""}\n${evidence.quote || ""}`;
     if (explicitRunSheet.test(combined)) return true;
-    return evidence.page <= 8 && /title\s*(report|search|summary)|search\s*report|abstractor/i.test(evidence.documentType || "") && structuralScore(combined) >= 2;
+    return evidence.page <= 8 && titleSummaryType.test(evidence.documentType || "") && structuralScore(combined) >= 2;
   });
 }
 
-export function detectRunSheet(exam: Pick<VeraExam, "documents" | "findings">): RunSheetDetection {
+export function detectRunSheet(exam: Pick<VeraExam, "documents" | "findings" | "pages">): RunSheetDetection {
   const explicit = exam.documents.find((document) => explicitRunSheet.test(`${document.documentType || ""}\n${document.excerpt || ""}`));
   if (explicit) {
     return {
@@ -72,7 +76,18 @@ export function detectRunSheet(exam: Pick<VeraExam, "documents" | "findings">): 
       confidence: "medium",
       pageStart: functional.pageStart,
       pageEnd: functional.pageEnd,
-      reason: `Front-of-packet title summary pages function as the Run Sheet even though they are not literally labeled \"Run Sheet\". They summarize recording/title facts that must be reconciled to the supporting instruments behind them.`,
+      reason: "Front-of-packet title summary pages function as the Run Sheet even though they are not literally labeled Run Sheet. They summarize title/recording facts that must be reconciled to the supporting instruments behind them.",
+    };
+  }
+
+  const structuralPages = exam.pages.filter(pageLooksLikeFunctionalRunSheet);
+  if (structuralPages.length) {
+    return {
+      detected: true,
+      confidence: "medium",
+      pageStart: Math.min(...structuralPages.map((page) => page.page)),
+      pageEnd: Math.max(...structuralPages.map((page) => page.page)),
+      reason: "The opening PDF pages have title-summary/recording-list structure and function as the Run Sheet even without a literal Run Sheet heading.",
     };
   }
 
