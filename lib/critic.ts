@@ -1,6 +1,6 @@
-import { VeraExam, type AuditFinding } from "./vera";
+import { VeraExam, type AuditFinding, type PacketDocument } from "./vera";
 import { CRITICAL_QUESTION_NUMBERS, isSupportedSearchType } from "./audit-rules";
-import { detectRunSheet } from "./run-sheet-detection";
+import { detectRunSheet, type RunSheetDetection } from "./run-sheet-detection";
 
 const acceptable = new Set(["PASS", "NOT_APPLICABLE"]);
 
@@ -14,13 +14,10 @@ function evidenceIsUsable(finding: AuditFinding): boolean {
   );
 }
 
-function normalizeRunSheetApplicability(exam: VeraExam, finding: AuditFinding): AuditFinding {
+function normalizeRunSheetApplicability(finding: AuditFinding, detection: RunSheetDetection): AuditFinding {
   if (![19, 20].includes(finding.number)) return finding;
 
-  const detection = detectRunSheet(exam);
   if (detection.detected) {
-    // If packet structure says a Run Sheet exists, it is never acceptable for the model
-    // to waive Q19/Q20 merely because the words "Run Sheet" were not printed on the page.
     if (finding.status !== "NOT_APPLICABLE") return finding;
     return {
       ...finding,
@@ -33,8 +30,7 @@ function normalizeRunSheetApplicability(exam: VeraExam, finding: AuditFinding): 
     };
   }
 
-  // Absence of a literal label is not proof that a Run Sheet is absent. When structure is
-  // ambiguous, keep Q19/Q20 open rather than silently converting them to N/A.
+  // No literal label is not proof of absence. If structure is ambiguous, keep Q19/Q20 open.
   if (finding.status === "NOT_APPLICABLE") {
     return {
       ...finding,
@@ -63,10 +59,27 @@ function enforceEvidence(finding: AuditFinding): AuditFinding {
   return finding;
 }
 
+function documentsWithFunctionalRunSheet(exam: VeraExam, detection: RunSheetDetection): PacketDocument[] {
+  if (!detection.detected) return exam.documents;
+  const alreadyExplicit = exam.documents.some((document) => /\b(run\s*sheet|abstractor\s*sheet|search\s*sheet|title\s*worksheet)\b/i.test(document.documentType || ""));
+  if (alreadyExplicit) return exam.documents;
+
+  return [
+    ...exam.documents,
+    {
+      documentType: "Run Sheet (functional title-summary section)",
+      pageStart: detection.pageStart || 1,
+      pageEnd: detection.pageEnd || detection.pageStart || 1,
+      excerpt: detection.reason,
+    },
+  ].sort((a, b) => a.pageStart - b.pageStart);
+}
+
 export function critique(exam: VeraExam): VeraExam {
   const seen = new Set<number>();
+  const runSheetDetection = detectRunSheet(exam);
   const findings = exam.findings
-    .map((finding) => normalizeRunSheetApplicability(exam, finding))
+    .map((finding) => normalizeRunSheetApplicability(finding, runSheetDetection))
     .map(enforceEvidence);
   const malformedQuestions = findings.filter((finding) => {
     const invalid = finding.number < 1 || finding.number > 20 || seen.has(finding.number);
@@ -91,6 +104,7 @@ export function critique(exam: VeraExam): VeraExam {
 
   return {
     ...exam,
+    documents: documentsWithFunctionalRunSheet(exam, runSheetDetection),
     findings,
     status,
     criticalPassRate,
