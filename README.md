@@ -1,129 +1,119 @@
-# CybridTech Examiner
+# Cybrid Title
 
-Evidence-first non-insured title workbench with two directions built on one source-preserving document engine.
+Evidence-first title QC, curative analysis, and client data export built around one governing contract:
 
-## MVP modes
+`INGEST → EXTRACT → CLASSIFY → CHECK → GROUND → RENDER → RECORD`
 
-### 1. Review Existing Title Report
+The shorter product doctrine is **EXTRACT → CHECK → GROUND → RENDER, every time, in that order**.
 
-One complete title-report / Run Sheet packet goes in. The Examiner reads the packet multimodally, applies the loaded VERA v3 structure and selected RCS order-type requirements, runs two independent passes, enforces evidence server-side, and presents the findings for human approval, override, or needs-review disposition.
+## Current user journeys
 
-Output:
+### Batch QC / Single Review
 
-- VERA v3 review structure
-- exact quote + physical PDF page evidence
-- critical Q4–Q12 and Q17–Q20 verdict logic
-- examiner decisions preserved separately from the AI finding
-- genuine `.docx` export plus printable PDF view
+A complete title-report packet goes in. Cybrid Title:
 
-### 2. Build Run Sheet From Documents
+1. identifies the exact packet by SHA-256;
+2. extracts page-addressable native PDF text when coverage is reliable;
+3. uses OpenAI PDF/vision as the current fallback for scan/image-heavy packets;
+4. auto-detects state and the supported order profile from opening title-summary pages when possible;
+5. identifies a functional Run Sheet/title-summary section by structure, not only by literal label;
+6. applies the loaded VERA/RCS/Quick Reference/Legal Description rules;
+7. runs one GPT-5.6 Sol forensic review pass;
+8. applies the deterministic server critic/evidence gate;
+9. projects grounded exceptions into QC/curative readiness;
+10. renders the review plus configurable CSV/JSON data export;
+11. stores a private review receipt.
 
-One or more recorded title documents go in. The Examiner classifies each supplied document, extracts recording facts with source evidence, builds Run Sheet rows, then independently rereads the entire packet and reconciles the two builds.
+The current Review fast path is deliberately **one full-packet Sol pass + deterministic server critic**, not two full-PDF AI passes.
 
-Output:
+### Build Run Sheet
 
-- evidence-backed Run Sheet rows
-- `VERIFIED` or `REVIEW` state per row
-- editable extracted values
-- selected RCS requirements that still require examiner review
-- CSV export
+Source title documents can be uploaded to build an evidence-backed Run Sheet. The current Build implementation performs two independent OpenAI builds and reconciles them into `VERIFIED` / `REVIEW` rows. This direction still needs to be brought fully onto the same extraction-ledger architecture before multi-client production use.
 
-The exact customer/RCS production Run Sheet column mapping can be substituted once a representative production sheet is supplied; the evidence model and verification flow remain the same.
-
-## Supported MVP search types
-
-The current authoritative RCS source supplied by the owner is encoded for:
+## Supported order/QC profiles
 
 - Foreclosure
 - 2nd Lien
 - Current Owner Search
+- Two Owner Search — current Ncala/demo profile supplied by the owner; not represented as an authoritative RCS rule pack
 
-`2nd Lien Limited` is intentionally not treated as a VERA report because the supplied RCS instructions specify a spreadsheet workflow. Elite requirements supplied so far are Tennessee-specific and are not presented as a universal search type.
+`2nd Lien Limited` is not treated as a normal VERA report because the supplied RCS instructions specify a spreadsheet workflow. Elite requirements supplied so far are Tennessee-specific and are not presented as universal.
 
-## Evidence rules
+## Evidence doctrine
 
-- reset context for each packet; use only supplied evidence and loaded rules
-- no assumptions or inferred negatives
-- every supported PASS or FAIL must carry usable quoted packet evidence and a physical page
-- referenced but unavailable comparison documents become `CANNOT_CONFIRM`
-- MERS + MIN does not create an assignment requirement by itself
-- HOA requirements depend on reference/applicability and selected RCS order type
-- Run Sheet review is bidirectional: Run Sheet → packet and packet → Run Sheet
-- independent-pass disagreements require review rather than silent resolution
-- human overrides do not overwrite the original AI finding
-- Q4–Q12 and Q17–Q20 are the critical verdict questions
+- reset context for each packet;
+- no assumptions or inferred negatives;
+- supported PASS/FAIL requires a source quote, physical PDF page, and document type;
+- referenced but unavailable comparison documents become `CANNOT_CONFIRM`;
+- Run Sheet review is bidirectional: summary → source documents and source documents → summary;
+- an unlabeled front title-search summary may function as the Run Sheet;
+- MERS + MIN does not create an assignment requirement by itself;
+- state-law dependencies are not invented when no authoritative state rule is loaded;
+- Q4–Q12 and Q17–Q20 control the automated critical verdict.
 
-The server, not merely the model prompt, rejects supported PASS/FAIL findings that lack usable evidence.
+The deterministic critic currently verifies evidence structure and fails unsupported PASS/FAIL closed. Native-text quote-to-page verification and a dedicated scanned-page OCR ledger remain architecture-hardening work; see `docs/ARCHITECTURE_READINESS_AUDIT.md`.
 
-## Legal Description Compliance Protocol
+## Packet / matter / review identity
 
-The owner-supplied protocol is loaded and applies whenever legal-description validation is required. It requires the Examiner to:
+These are separate:
 
-- parse and preserve every metes-and-bounds THENCE call
-- preserve directions, degrees, minutes, seconds, distances, punctuation, decimal notation, and standard symbols
-- compare referenced source instruments line-by-line and word-for-word when an instrument number is cited
-- identify omitted or altered calls, landmarks, bearings, directions, and measurements
-- verify call sequence and logical return to the Place of Beginning
-- classify material, formatting, and typographical discrepancies
-- use `CANNOT_CONFIRM` when a required referenced source instrument cannot be inspected
+- `packetHash` — SHA-256 of the exact bytes; the only extraction-cache identity.
+- `matterKey` — opaque related-matter identity derived after review.
+- `reviewId` — fresh UUID for every completed review.
 
-The system does not invent state mandates. When a checklist item depends on state law and no authoritative state rule has been loaded for that issue, the dependency is left for manual verification rather than converted to an unsupported PASS/FAIL.
+A later report for the same address/order/parcel is a new packet whenever its bytes differ. Old documentary content is never reused merely because property identity matches.
 
-## Model and cost policy
+## Ncala demo data flow
 
-OpenAI is the document-reading and reasoning provider. Azure Document Intelligence is not required.
+The workbench can process one report or a batch and produce a canonical demo title record containing order/matter fields, borrower, property, target-lien fields, QC status, foreclosure readiness, curative issues, packet identity, and review identity.
 
-The normal path uses:
+The default Ncala export includes:
 
-```bash
-OPENAI_DOCUMENT_MODEL=gpt-5.6-luna
-OPENAI_VERIFY_MODEL=gpt-5.6-luna
-```
+- TS Number
+- Borrower Name
+- Property Address
+- Lien Position
+- QC Status
+- Foreclosure Readiness
+- Curative Issues
 
-The API forces GPT-5.6 Luna unless premium use is deliberately unlocked with:
+Additional CSV/JSON columns can be toggled without changing the review engine. A client's eventual import file or API contract is an adapter over the canonical record, not the database schema.
 
-```bash
-OPENAI_ALLOW_PREMIUM_MODEL=true
-```
+## Architecture / harness
 
-There is no automatic Terra/Sol escalation.
+The `architect/full-system-readiness` work adds:
 
-## Required production environment
+- explicit legal pipeline transitions;
+- deterministic architecture regression harness;
+- CI build gate;
+- an architecture readiness audit with RED/YELLOW/GREEN findings.
 
-```bash
-OPENAI_API_KEY=...
-EXAMINER_ACCESS_CODE=...
-```
-
-`EXAMINER_ACCESS_CODE` is checked server-side before any paid AI processing or VERA DOCX export. This prevents a public deployment from becoming an unauthenticated OpenAI-spend endpoint.
-
-### Large title packets
-
-Vercel Functions have a request-body limit that is too small for many real title packets. For production-sized PDFs, create a **private Vercel Blob store** for the project. Vercel then supplies:
-
-```bash
-BLOB_READ_WRITE_TOKEN=...
-```
-
-The browser uploads large title packets directly to the private Blob store, the server reads the private object for processing, and the temporary Blob object is deleted after ingestion. Small files can still use the direct request path.
-
-## Authoritative rule-pack status
-
-Loaded:
-
-- VERA Template v3 supplied by the owner
-- RCS Title Search Requirements by order type supplied by the owner
-- recovered owner no-assumption/evidence audit doctrine
-- `Title Report Forensic Audit – Quick Reference Checklist.docx`
-- `Title Report Legal Description Compliance Protocol.docx`
-
-The loaded rule version is `CYBRID-VERA3-RCS-QRC-LDP-2026-08-28`.
-
-## Local
+Run:
 
 ```bash
 npm install
-npm run dev
+npm run verify
+npm run typecheck
+npm run build
 ```
 
-Open `/examine`.
+Build success proves code-level contracts, **not title accuracy**. Production accuracy requires a secure human-reviewed golden packet corpus.
+
+## Environment
+
+The existing deployment accepts `OPEN_AI_KEY` as an alias for `OPENAI_API_KEY`.
+
+```bash
+OPEN_AI_KEY=...
+BLOB_READ_WRITE_TOKEN=...
+```
+
+Testing currently uses the intentional examiner-auth bypass. Real user/tenant/admin authentication is required before customer production launch.
+
+Large title packets use private Vercel Blob direct upload so they do not traverse Vercel's small request-body path.
+
+## Current architecture status
+
+Do not use this README as a claim that every production-hardening item is complete. The authoritative readiness checklist is:
+
+`docs/ARCHITECTURE_READINESS_AUDIT.md`

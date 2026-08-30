@@ -1,59 +1,66 @@
 "use client";
 
-import Link from "next/link";
 import { upload } from "@vercel/blob/client";
 import { useEffect, useMemo, useState } from "react";
 import { SEARCH_TYPES } from "@/lib/audit-rules";
-import { runSheetToCsv, type RunSheetBuild } from "@/lib/run-sheet";
 import {
-  buildCanonicalTitleRecord,
-  EXPORT_FIELDS,
-  NCALA_DEMO_EXPORT_FIELDS,
-  titleRecordsToCsv,
-  titleRecordsToJson,
-  type CanonicalTitleRecord,
-  type ExportFieldKey,
-} from "@/lib/title-record";
-import type { AuditFinding, MortgageRecord, VeraExam } from "@/lib/vera";
+  AVAILABLE_EXPORT_COLUMNS,
+  NCALA_DEMO_EXPORT_PROFILE,
+  createExportProfile,
+  renderCsv,
+  renderJson,
+  validateExportProfile,
+  type ExportColumn,
+} from "@/lib/export-profiles";
+import { reduceQcChecks } from "@/lib/title-qc-engine";
+import type { QcCheckResult, QcStatus, TitleReviewResult } from "@/lib/title-domain";
+import type { VeraExam } from "@/lib/vera";
 import { Logo } from "../components/Logo";
 import styles from "./demo.module.css";
 
-type Mode = "batch" | "single" | "build";
-type ItemStatus = "queued" | "uploading" | "reviewing" | "complete" | "error";
 type ReviewSearchType = "Auto Detect" | (typeof SEARCH_TYPES)[number];
+type ItemStatus = "queued" | "processing" | "complete" | "error";
+type ExaminerDecision = "CONFIRM" | "CORRECT" | "NEEDS_EVIDENCE";
 
 type Readiness = {
   openAIConfigured: boolean;
   largeFileStorageConfigured: boolean;
   authenticationMode?: string;
   documentModel?: string;
+  engine?: string;
+  pipeline?: string[];
 };
 
 type BatchItem = {
   id: string;
+  manifestItemId?: string;
   fileName: string;
   status: ItemStatus;
+  review?: TitleReviewResult;
   exam?: VeraExam;
-  record?: CanonicalTitleRecord;
   error?: string;
 };
 
-const CLEAN = new Set(["PASS", "NOT_APPLICABLE"]);
+type BatchManifest = {
+  batchId: string;
+  items: Array<{ itemId: string; sourceFile: string }>;
+};
 
 function safeName(value: string) {
   return (value || "cybrid-title").replace(/\.[^/.]+$/, "").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "") || "cybrid-title";
 }
 
-function contentTypeFor(file: File) {
-  if (file.name.toLowerCase().endsWith(".pdf")) return "application/pdf";
-  if (file.name.toLowerCase().endsWith(".md")) return "text/markdown";
-  if (file.name.toLowerCase().endsWith(".txt")) return "text/plain";
-  return file.type || "application/octet-stream";
-}
-
 function extensionFor(filename: string) {
   const match = filename.toLowerCase().match(/\.(pdf|txt|md)$/);
   return match ? `.${match[1]}` : "";
+}
+
+function contentTypeFor(file: File) {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".md")) return "text/markdown";
+  if (lower.endsWith(".txt")) return "text/plain";
+  return file.type || "application/octet-stream";
 }
 
 function fileSize(size: number) {
@@ -79,288 +86,326 @@ function downloadText(filename: string, body: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-function readinessClass(record: CanonicalTitleRecord) {
-  if (record.foreclosureReadiness === "CLEAR") return `${styles.status} ${styles.clear}`;
-  if (record.foreclosureReadiness === "CURATIVE_REQUIRED") return `${styles.status} ${styles.curative}`;
-  if (record.foreclosureReadiness === "QC_DEFICIENCY") return `${styles.status} ${styles.qc}`;
+function statusClass(value: string) {
+  if (value === "CLEAR" || value === "PASS" || value === "NOT_APPLICABLE") return `${styles.status} ${styles.clear}`;
+  if (value === "CURATIVE_REQUIRED" || value === "FAIL") return `${styles.status} ${styles.curative}`;
+  if (value === "QC_DEFICIENCY") return `${styles.status} ${styles.qc}`;
   return `${styles.status} ${styles.review}`;
 }
 
-function findingStatusClass(finding: AuditFinding) {
-  if (finding.status === "FAIL") return `${styles.status} ${styles.curative}`;
-  if (CLEAN.has(finding.status)) return `${styles.status} ${styles.clear}`;
-  return `${styles.status} ${styles.review}`;
-}
-
-function mortgageLabel(mortgage: MortgageRecord) {
-  const instrument = mortgage.instrument && mortgage.instrument !== "Not Provided" ? mortgage.instrument : `Mortgage ${mortgage.index}`;
-  const holder = mortgage.holder && mortgage.holder !== "Not Provided" ? mortgage.holder : "holder not stated";
-  return `${instrument} · ${mortgage.amount || "amount not stated"} · ${holder}`;
+function exceptionChecks(review?: TitleReviewResult): QcCheckResult[] {
+  return review?.qc.checks.filter((check) => !["PASS", "NOT_APPLICABLE"].includes(check.status)) || [];
 }
 
 export default function DemoPage() {
-  const [mode, setMode] = useState<Mode>("batch");
   const [clientName, setClientName] = useState("Ncala");
-  const [stateCode, setStateCode] = useState("TX");
   const [searchType, setSearchType] = useState<ReviewSearchType>("Auto Detect");
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [items, setItems] = useState<BatchItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("");
-  const [runSheet, setRunSheet] = useState<RunSheetBuild | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [batchId, setBatchId] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [exportFields, setExportFields] = useState<ExportFieldKey[]>(NCALA_DEMO_EXPORT_FIELDS);
+  const [decisions, setDecisions] = useState<Record<string, Record<string, ExaminerDecision>>>({});
+  const defaultColumnKeys = useMemo(() => new Set(NCALA_DEMO_EXPORT_PROFILE.columns.map((column) => column.key)), []);
+  const [selectedColumns, setSelectedColumns] = useState<string[]>(Array.from(defaultColumnKeys));
 
   useEffect(() => {
     fetch("/api/examine").then((response) => response.json()).then(setReadiness).catch(() => setReadiness(null));
   }, []);
 
-  const completed = useMemo(() => items.filter((item) => item.record), [items]);
-  const records = useMemo(() => completed.map((item) => item.record as CanonicalTitleRecord), [completed]);
-  const selected = useMemo(() => items.find((item) => item.id === selectedId) || completed[0], [items, selectedId, completed]);
+  const availableColumns = useMemo(() => {
+    const byKey = new Map<string, ExportColumn>();
+    AVAILABLE_EXPORT_COLUMNS.forEach((column) => byKey.set(column.key, column));
+    return Array.from(byKey.values());
+  }, []);
+  const completeItems = useMemo(() => items.filter((item) => item.review), [items]);
+  const selected = useMemo(() => items.find((item) => item.id === selectedId) || completeItems[0], [items, selectedId, completeItems]);
+  const rows = useMemo(() => completeItems.map((item) => ({ record: item.review!.record, qc: item.review!.qc })), [completeItems]);
   const metrics = useMemo(() => ({
     total: items.length,
-    clear: records.filter((record) => record.foreclosureReadiness === "CLEAR").length,
-    curative: records.filter((record) => record.foreclosureReadiness === "CURATIVE_REQUIRED").length,
-    review: records.filter((record) => record.foreclosureReadiness === "CANNOT_CONFIRM").length,
-    qc: records.filter((record) => record.foreclosureReadiness === "QC_DEFICIENCY").length,
-  }), [items, records]);
+    clear: completeItems.filter((item) => item.review?.qc.foreclosureReadiness === "CLEAR").length,
+    curative: completeItems.filter((item) => item.review?.qc.foreclosureReadiness === "CURATIVE_REQUIRED").length,
+    review: completeItems.filter((item) => item.review?.qc.foreclosureReadiness === "CANNOT_CONFIRM").length,
+    qc: completeItems.filter((item) => item.review?.qc.foreclosureReadiness === "QC_DEFICIENCY").length,
+  }), [items, completeItems]);
 
-  function resetOutput() {
+  function chooseFiles(list: FileList | null) {
+    if (!list?.length || busy) return;
+    setFiles(Array.from(list));
     setItems([]);
     setSelectedId("");
-    setRunSheet(null);
+    setBatchId("");
     setProgress(0);
     setNotice("");
     setError("");
+    setDecisions({});
   }
 
-  function changeMode(next: Mode) {
-    if (busy) return;
-    setMode(next);
-    if (next === "build" && searchType === "Auto Detect") setSearchType("Foreclosure");
-    if (next !== "build" && mode === "build") setSearchType("Auto Detect");
-    setFiles([]);
-    resetOutput();
-  }
-
-  function chooseFiles(list: FileList | null) {
-    if (!list?.length) return;
-    const chosen = Array.from(list);
-    if (mode === "single" && chosen.length > 1) {
-      setError("Single QC accepts one complete title-report packet. Use Batch QC for multiple reports.");
-      return;
+  async function createBatch(): Promise<BatchManifest | null> {
+    try {
+      const response = await fetch("/api/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientName, sourceFiles: files.map((file) => file.name), exportProfileId: "ncala-demo-v1" }),
+      });
+      const manifest = await parseResponse(response) as BatchManifest;
+      setBatchId(manifest.batchId);
+      return manifest;
+    } catch {
+      return null;
     }
-    setFiles(chosen);
-    resetOutput();
+  }
+
+  async function updateBatch(item: BatchItem, status: "PROCESSING" | "COMPLETE" | "ERROR", review?: TitleReviewResult, message?: string) {
+    if (!batchId || !item.manifestItemId) return;
+    await fetch("/api/batches", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId,
+        itemId: item.manifestItemId,
+        status,
+        reviewId: review?.record.reviewId,
+        packetHash: review?.record.packetHash,
+        error: message,
+      }),
+    }).catch(() => undefined);
   }
 
   async function uploadOne(file: File, index: number, total: number) {
-    const pathname = `cybrid-title/demo/${Date.now()}-${index}-${safeName(file.name)}${extensionFor(file.name)}`;
+    const pathname = `cybrid-title/rebuild/${Date.now()}-${index}-${safeName(file.name)}${extensionFor(file.name)}`;
     const result = await upload(pathname, file, {
       access: "private",
       handleUploadUrl: "/api/uploads",
-      clientPayload: JSON.stringify({ mode: "ncala-demo" }),
+      clientPayload: JSON.stringify({ mode: "canonical-title-platform" }),
       contentType: contentTypeFor(file),
       multipart: file.size > 4_000_000,
-      onUploadProgress: ({ percentage }) => {
-        setProgress(Math.round(((index + percentage / 100) / total) * 100));
-      },
+      onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)),
     });
     return result.pathname;
   }
 
-  async function reviewOne(file: File, index: number, total: number): Promise<VeraExam> {
+  async function reviewOne(file: File, index: number, total: number): Promise<{ review: TitleReviewResult; exam?: VeraExam }> {
     let response: Response;
     if (readiness?.largeFileStorageConfigured) {
       const pathname = await uploadOne(file, index, total);
       response = await fetch("/api/examine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType }),
+        body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType, clientName }),
       });
     } else {
-      if (file.size > 4_000_000) throw new Error("Large-file storage is not configured for this packet.");
+      if (file.size > 4_000_000) throw new Error("Private large-file storage is required for this packet.");
       const form = new FormData();
       form.append("files", file);
       form.set("state", "AUTO");
       form.set("searchType", searchType);
+      form.set("clientName", clientName);
       response = await fetch("/api/examine", { method: "POST", body: form });
     }
     const data = await parseResponse(response);
-    if (!data?.exam) throw new Error("Cybrid Title returned no completed review.");
-    return data.exam as VeraExam;
+    if (!data?.review) throw new Error("Cybrid Title returned no canonical title review.");
+    return { review: data.review as TitleReviewResult, exam: data.exam as VeraExam | undefined };
   }
 
-  async function runQc() {
+  async function runBatch() {
     if (!files.length || busy) return;
     setBusy(true);
     setError("");
     setNotice("");
     setProgress(0);
-    const seed = files.map((file, index) => ({ id: `${Date.now()}-${index}`, fileName: file.name, status: "queued" as ItemStatus }));
+    const manifest = await createBatch();
+    const seed: BatchItem[] = files.map((file, index) => ({
+      id: `${Date.now()}-${index}`,
+      manifestItemId: manifest?.items[index]?.itemId,
+      fileName: file.name,
+      status: "queued",
+    }));
     setItems(seed);
     setSelectedId(seed[0]?.id || "");
 
     let succeeded = 0;
     for (let index = 0; index < files.length; index += 1) {
-      const id = seed[index].id;
-      setItems((current) => current.map((item) => item.id === id ? { ...item, status: "uploading" } : item));
+      const item = seed[index];
+      setItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, status: "processing" } : candidate));
+      await updateBatch(item, "PROCESSING");
       try {
-        setItems((current) => current.map((item) => item.id === id ? { ...item, status: "reviewing" } : item));
-        const exam = await reviewOne(files[index], index, files.length);
-        const record = buildCanonicalTitleRecord(exam, clientName);
-        setItems((current) => current.map((item) => item.id === id ? { ...item, status: "complete", exam, record } : item));
+        const result = await reviewOne(files[index], index, files.length);
+        setItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, status: "complete", ...result } : candidate));
+        await updateBatch(item, "COMPLETE", result.review);
         succeeded += 1;
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : "Review failed";
-        setItems((current) => current.map((item) => item.id === id ? { ...item, status: "error", error: message } : item));
+        setItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, status: "error", error: message } : candidate));
+        await updateBatch(item, "ERROR", undefined, message);
       }
       setProgress(Math.round(((index + 1) / files.length) * 100));
     }
 
     setBusy(false);
-    setNotice(`${succeeded} of ${files.length} title report${files.length === 1 ? "" : "s"} completed. Review the exception queue and export the client data file below.`);
+    setNotice(`${succeeded} of ${files.length} title packet${files.length === 1 ? "" : "s"} completed. Resolve exceptions, confirm the foreclosure target/lien position when required, then export the client data file.`);
   }
 
-  async function buildRunSheet() {
-    if (!files.length || busy) return;
-    setBusy(true);
-    setError("");
-    setRunSheet(null);
-    setProgress(0);
-    try {
-      let response: Response;
-      const buildSearchType = searchType === "Auto Detect" ? "Foreclosure" : searchType;
-      if (readiness?.largeFileStorageConfigured) {
-        const pathnames: string[] = [];
-        for (let index = 0; index < files.length; index += 1) pathnames.push(await uploadOne(files[index], index, files.length));
-        response = await fetch("/api/run-sheet", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ blobPathnames: pathnames, state: stateCode, searchType: buildSearchType }),
-        });
-      } else {
-        const form = new FormData();
-        files.forEach((file) => form.append("files", file));
-        form.set("state", stateCode);
-        form.set("searchType", buildSearchType);
-        response = await fetch("/api/run-sheet", { method: "POST", body: form });
-      }
-      const data = await parseResponse(response);
-      if (!data?.build) throw new Error("Cybrid Title returned no Run Sheet build.");
-      setRunSheet(data.build as RunSheetBuild);
-      setNotice("Run Sheet built from the supplied source documents. Review any rows marked REVIEW before export.");
-      setProgress(100);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Run Sheet build failed");
-    } finally {
-      setBusy(false);
+  function patchReview(id: string, updater: (review: TitleReviewResult) => TitleReviewResult) {
+    setItems((current) => current.map((item) => item.id === id && item.review ? { ...item, review: updater(item.review) } : item));
+  }
+
+  function selectTargetLien(item: BatchItem, instrumentId: string) {
+    if (!item.review) return;
+    patchReview(item.id, (review) => {
+      const mortgage = review.record.mortgages.find((candidate) => candidate.id === instrumentId);
+      if (!mortgage) return review;
+      const beneficiary = mortgage.parties.find((party) => /holder|beneficiary/i.test(party.role))?.name || "Needs review";
+      const record = {
+        ...review.record,
+        targetLien: {
+          ...review.record.targetLien,
+          instrumentId: mortgage.id,
+          instrumentNumber: { value: mortgage.instrumentNumber, state: mortgage.evidence.length ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: mortgage.evidence, basis: "Examiner selected foreclosure target lien" },
+          amount: { value: mortgage.amount, state: mortgage.evidence.length ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: mortgage.evidence, basis: "Examiner selected foreclosure target lien" },
+          beneficiary: { value: beneficiary, state: mortgage.evidence.length ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: mortgage.evidence, basis: "Examiner selected foreclosure target lien" },
+          selectionRequired: false,
+        },
+      };
+      const checks = review.qc.checks.map((check) => check.id === "TARGET_LIEN_FOUND" ? { ...check, status: "PASS" as const, summary: `Target lien selected by examiner: ${mortgage.instrumentNumber}.`, evidence: mortgage.evidence } : check);
+      return { ...review, record, qc: reduceQcChecks(review.qc, checks) };
+    });
+  }
+
+  function setLienPosition(item: BatchItem, value: string) {
+    if (!item.review) return;
+    patchReview(item.id, (review) => {
+      const normalized = value.trim() || "Needs review";
+      const record = {
+        ...review.record,
+        targetLien: {
+          ...review.record.targetLien,
+          position: { value: normalized, state: normalized === "Needs review" ? "NOT_STATED" as const : "CONFIRMED" as const, evidence: review.record.targetLien.position.evidence, basis: normalized === "Needs review" ? "Lien position unresolved" : "Examiner-confirmed lien position" },
+        },
+      };
+      const checks = review.qc.checks.map((check) => check.id === "TARGET_LIEN_POSITION_ESTABLISHED" ? {
+        ...check,
+        status: normalized === "Needs review" ? "CANNOT_CONFIRM" as const : "PASS" as const,
+        summary: normalized === "Needs review" ? "Lien position remains unresolved." : `Target lien position confirmed as ${normalized}.`,
+      } : check);
+      return { ...review, record, qc: reduceQcChecks(review.qc, checks) };
+    });
+  }
+
+  async function decide(item: BatchItem, check: QcCheckResult, decision: ExaminerDecision) {
+    if (!item.review) return;
+    let reason = decision === "CONFIRM" ? "Examiner confirmed this finding against the displayed packet evidence." : window.prompt("Decision reason:", decision === "NEEDS_EVIDENCE" ? "Additional source evidence is required." : "Examiner correction") || "";
+    if (!reason.trim()) return;
+    let correctedStatus: QcStatus | undefined;
+    let correctedValue: string | undefined;
+    if (decision === "CORRECT") {
+      const entered = (window.prompt("Correct status: PASS, FAIL, CANNOT_CONFIRM, or NOT_APPLICABLE", "PASS") || "").trim().toUpperCase();
+      if (!["PASS", "FAIL", "CANNOT_CONFIRM", "NOT_APPLICABLE"].includes(entered)) return;
+      correctedStatus = entered as QcStatus;
+      correctedValue = window.prompt("Corrected finding/summary:", check.summary) || check.summary;
+    }
+
+    const response = await fetch("/api/review-decisions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: check.id, decision, correctedStatus, correctedValue, reason }),
+    });
+    if (!response.ok) {
+      setError((await response.json().catch(() => null))?.error || "Could not save examiner decision.");
+      return;
+    }
+
+    setDecisions((current) => ({ ...current, [item.review!.record.reviewId]: { ...(current[item.review!.record.reviewId] || {}), [check.id]: decision } }));
+    if (decision !== "CONFIRM") {
+      patchReview(item.id, (review) => {
+        const checks = review.qc.checks.map((candidate) => candidate.id === check.id ? {
+          ...candidate,
+          status: decision === "NEEDS_EVIDENCE" ? "CANNOT_CONFIRM" as const : correctedStatus || candidate.status,
+          summary: decision === "CORRECT" ? correctedValue || candidate.summary : `${candidate.summary} Examiner requires additional evidence.`,
+        } : candidate);
+        return { ...review, qc: reduceQcChecks(review.qc, checks) };
+      });
     }
   }
 
-  function patchRecord(id: string, patch: Partial<CanonicalTitleRecord>) {
-    setItems((current) => current.map((item) => item.id === id && item.record ? { ...item, record: { ...item.record, ...patch } } : item));
+  function decisionFor(item: BatchItem, checkId: string) {
+    return item.review ? decisions[item.review.record.reviewId]?.[checkId] : undefined;
   }
 
-  function patchLienPosition(id: string, value: string) {
-    setItems((current) => current.map((item) => item.id === id && item.record ? {
-      ...item,
-      record: { ...item.record, targetLien: { ...item.record.targetLien, reportedPosition: value, positionBasis: "Examiner/demo correction" } },
-    } : item));
+  function unresolvedDecisions(item: BatchItem) {
+    return exceptionChecks(item.review).filter((check) => !decisionFor(item, check.id)).length;
   }
 
-  function selectTargetLien(id: string, mortgage: MortgageRecord) {
-    setItems((current) => current.map((item) => item.id === id && item.record ? {
-      ...item,
-      record: {
-        ...item.record,
-        targetLien: {
-          ...item.record.targetLien,
-          instrumentNumber: mortgage.instrument || "Needs review",
-          amount: mortgage.amount || "Needs review",
-          beneficiary: mortgage.holder || "Needs review",
-          reportedPosition: "Needs review",
-          positionBasis: "Target lien selected by examiner; confirm its lien position from packet evidence",
-        },
-      },
-    } : item));
+  function toggleColumn(key: string) {
+    setSelectedColumns((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
   }
 
-  function toggleExportField(key: ExportFieldKey) {
-    setExportFields((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  function exportProfile(format: "csv" | "json") {
+    const columns = availableColumns.filter((column) => selectedColumns.includes(column.key));
+    return createExportProfile(clientName, columns, format);
   }
+
+  const exportWarnings = useMemo(() => {
+    if (!rows.length) return [];
+    const profile = exportProfile("csv");
+    const fieldWarnings = validateExportProfile(profile, rows);
+    const decisionWarnings = completeItems.flatMap((item) => {
+      const count = unresolvedDecisions(item);
+      return count ? [`${item.fileName}: ${count} exception${count === 1 ? "" : "s"} still require examiner disposition.`] : [];
+    });
+    return [...fieldWarnings, ...decisionWarnings];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, selectedColumns, completeItems, decisions, clientName, availableColumns]);
 
   function exportCsv() {
-    if (!records.length || !exportFields.length) return;
-    downloadText(`${safeName(clientName)}-title-qc-export.csv`, titleRecordsToCsv(records, exportFields), "text/csv;charset=utf-8");
+    if (!rows.length || exportWarnings.length) return;
+    downloadText(`${safeName(clientName)}-title-qc.csv`, renderCsv(exportProfile("csv"), rows), "text/csv;charset=utf-8");
   }
 
   function exportJson() {
-    if (!records.length || !exportFields.length) return;
-    downloadText(`${safeName(clientName)}-title-qc-export.json`, titleRecordsToJson(records, exportFields), "application/json;charset=utf-8");
+    if (!rows.length || exportWarnings.length) return;
+    downloadText(`${safeName(clientName)}-title-qc.json`, renderJson(exportProfile("json"), rows), "application/json;charset=utf-8");
   }
 
-  async function exportSelectedVera() {
-    if (!selected?.exam) return;
-    const response = await fetch("/api/export/vera-docx", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(selected.exam),
-    });
-    if (!response.ok) {
-      setError((await response.text()) || "VERA export failed");
-      return;
-    }
+  async function exportVera(item: BatchItem) {
+    if (!item.exam) return;
+    const response = await fetch("/api/export/vera-docx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(item.exam) });
+    if (!response.ok) return setError("VERA DOCX export failed.");
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${safeName(selected.exam.clientOrder || selected.fileName)}-VERA-v3.docx`;
+    anchor.download = `${safeName(item.exam.clientOrder || item.fileName)}-VERA-v3.docx`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
 
-  function exportRunSheetCsv() {
-    if (!runSheet) return;
-    downloadText(`${safeName(runSheet.propertyAddress)}-run-sheet.csv`, runSheetToCsv(runSheet), "text/csv;charset=utf-8");
-  }
-
-  const systemStatus = readiness === null
-    ? "Checking system…"
-    : readiness.openAIConfigured
-      ? `AI ready · ${readiness.documentModel || "review model"}`
-      : "AI not configured";
-
   return <div className={styles.shell}>
     <header className={styles.nav}>
-      <Link href="/" className={styles.brand}><Logo height={32} /><span className={styles.brandName}>CYBRID TITLE</span></Link>
-      <span className={styles.navTag}>QC · Curative · Data Export</span>
+      <div className={styles.brand}><Logo height={32} /><span className={styles.brandName}>CYBRID TITLE</span></div>
+      <span className={styles.navTag}>Title QC · Curative · Client Data</span>
     </header>
 
     <main className={styles.main}>
       <section className={styles.hero}>
-        <div><p className={styles.eyebrow}>Foreclosure title intelligence</p><h1>Title QC that ends in usable data.</h1></div>
-        <p>Upload one report or a batch. Cybrid Title checks the title package, separates curative issues from QC defects, and turns the grounded title facts into a client-ready CSV or JSON file.</p>
+        <div>
+          <p className={styles.eyebrow}>Canonical title intelligence workbench</p>
+          <h1>Upload the title reports. Find what is wrong. Know what blocks foreclosure. Export the data.</h1>
+        </div>
+        <p>Every packet is isolated and processed through the same evidence path: extract → classify → normalize → check → ground → human exceptions → client export. The client CSV is an adapter over the title record, never the database.</p>
       </section>
-
-      <div className={styles.tabs}>
-        <button className={`${styles.tab} ${mode === "batch" ? styles.tabActive : ""}`} onClick={() => changeMode("batch")}>Batch QC</button>
-        <button className={`${styles.tab} ${mode === "single" ? styles.tabActive : ""}`} onClick={() => changeMode("single")}>Single Review</button>
-        <button className={`${styles.tab} ${mode === "build" ? styles.tabActive : ""}`} onClick={() => changeMode("build")}>Build Run Sheet</button>
-      </div>
 
       <section className={`${styles.panel} ${styles.setupPanel}`}>
         <div className={styles.setup}>
           <label className={styles.field}>Client / export profile<input value={clientName} onChange={(event) => setClientName(event.target.value)} disabled={busy} /></label>
-          {mode === "build" ? <label className={styles.field}>State<input value={stateCode} maxLength={2} onChange={(event) => setStateCode(event.target.value.toUpperCase())} disabled={busy} /></label> : <div className={styles.profileNote}><b>State</b><br />Auto-detected per packet</div>}
-          <label className={styles.field}>QC / order profile<select value={searchType} onChange={(event) => setSearchType(event.target.value as ReviewSearchType)} disabled={busy}>{mode !== "build" ? <option>Auto Detect</option> : null}{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
-          <div className={styles.profileNote}>{systemStatus}<br />{readiness === null ? "Checking upload storage…" : readiness.largeFileStorageConfigured ? "Private large-file path ready" : "Direct upload only"}</div>
+          <label className={styles.field}>QC / order profile<select value={searchType} onChange={(event) => setSearchType(event.target.value as ReviewSearchType)} disabled={busy}><option>Auto Detect</option>{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+          <div className={styles.profileNote}>State is detected from each packet. Mixed-state and mixed-order batches are allowed.</div>
+          <div className={styles.profileNote}>{readiness?.openAIConfigured ? `AI ready · ${readiness.documentModel || "configured model"}` : readiness ? "AI not configured" : "Checking system…"}<br />{readiness?.engine || "canonical engine"}</div>
         </div>
-        {mode !== "build" && searchType === "Auto Detect" ? <div className={styles.notice}>Auto Detect reads each packet's opening title-summary/Run Sheet pages, determines its state and order profile, and applies that packet's Current Owner, Two Owner, 2nd Lien, or Foreclosure rules. Mixed-order and mixed-state batches are allowed.</div> : null}
       </section>
 
       {error ? <div className={styles.errorBox}>{error}</div> : null}
@@ -368,17 +413,14 @@ export default function DemoPage() {
 
       <section className={`${styles.panel} ${styles.uploadPanel}`}>
         <div className={styles.drop}>
-          <div>
-            <h2>{mode === "batch" ? "Upload a batch of title reports" : mode === "single" ? "Upload one title-report packet" : "Upload the source title documents"}</h2>
-            <p>{mode === "batch" ? "Each PDF becomes its own review job. One failure does not stop the rest of the batch." : mode === "single" ? "Review the Run Sheet/title summary against the documents behind it." : "Build a new evidence-backed Run Sheet from source documents."}</p>
-          </div>
+          <div><h2>Upload title-report packets</h2><p>One packet is one review job. Upload one or a batch.</p></div>
           <div className={styles.actions}>
-            <label className={styles.secondary}>{files.length ? "Choose different files" : "Choose files"}<input type="file" hidden accept=".pdf,.txt,.md" multiple={mode !== "single"} disabled={busy} onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} /></label>
-            {files.length ? <button className={styles.primary} onClick={() => void (mode === "build" ? buildRunSheet() : runQc())} disabled={busy || readiness?.openAIConfigured === false}>{busy ? "Processing…" : mode === "build" ? "Build Run Sheet" : mode === "batch" ? `Run Batch QC (${files.length})` : "Run Title QC"}</button> : null}
+            <label className={styles.secondary}>Choose files<input hidden type="file" multiple accept=".pdf,.txt,.md" onChange={(event) => chooseFiles(event.target.files)} /></label>
+            <button className={styles.primary} disabled={!files.length || busy} onClick={runBatch}>{busy ? "Running QC…" : "Run Title QC"}</button>
           </div>
         </div>
         {files.length ? <div className={styles.fileList}>{files.map((file) => <span className={styles.fileChip} key={`${file.name}-${file.size}`}>{file.name} · {fileSize(file.size)}</span>)}</div> : null}
-        {busy || progress ? <div className={styles.progressWrap}><div className={styles.progressBar}><div className={styles.progressFill} style={{ width: `${progress}%` }} /></div><div className={styles.progressText}>{busy ? `Processing · ${progress}%` : `${progress}% complete`}</div></div> : null}
+        {busy || progress ? <div className={styles.progressWrap}><div className={styles.progressBar}><div className={styles.progressFill} style={{ width: `${progress}%` }} /></div><div className={styles.progressText}>{progress}% · {batchId ? `Batch ${batchId}` : "reviewing"}</div></div> : null}
       </section>
 
       {items.length ? <>
@@ -386,49 +428,64 @@ export default function DemoPage() {
           <div className={styles.metric}><span>Batch</span><strong>{metrics.total}</strong></div>
           <div className={`${styles.metric} ${styles.metricClear}`}><span>Clear</span><strong>{metrics.clear}</strong></div>
           <div className={`${styles.metric} ${styles.metricCurative}`}><span>Curative</span><strong>{metrics.curative}</strong></div>
-          <div className={`${styles.metric} ${styles.metricReview}`}><span>Cannot Confirm</span><strong>{metrics.review}</strong></div>
-          <div className={styles.metric}><span>QC Deficiency</span><strong>{metrics.qc}</strong></div>
+          <div className={`${styles.metric} ${styles.metricReview}`}><span>Cannot confirm</span><strong>{metrics.review}</strong></div>
+          <div className={styles.metric}><span>QC deficiency</span><strong>{metrics.qc}</strong></div>
         </section>
 
         <section className={styles.panel}>
-          <div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Detected state, order type, borrower, target lien, and lien position remain visible before the client data file is exported.</p></div></div>
-          <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Order profile</th><th>Borrower</th><th>Property</th><th>Target lien</th><th>Lien position</th><th>QC</th><th>Foreclosure readiness</th><th>Curative / QC issues</th><th>Source</th></tr></thead><tbody>
-            {items.map((item) => item.record && item.exam ? <tr key={item.id}>
-              <td><button className={styles.rowButton} onClick={() => setSelectedId(item.id)}>{item.record.tsNumber}</button></td>
-              <td>{item.record.searchType}</td>
-              <td><input className={styles.editInput} value={item.record.borrowerName} onChange={(event) => patchRecord(item.id, { borrowerName: event.target.value, borrowerBasis: "Examiner/demo correction" })} /></td>
-              <td>{item.record.propertyAddress}</td>
-              <td>{item.exam.mortgages.length > 1 ? <select className={styles.editInput} value={item.record.targetLien.instrumentNumber === "Needs review" ? "" : item.record.targetLien.instrumentNumber} onChange={(event) => { const mortgage = item.exam?.mortgages.find((entry) => entry.instrument === event.target.value); if (mortgage) selectTargetLien(item.id, mortgage); }}><option value="">Select target lien</option>{item.exam.mortgages.map((mortgage) => <option key={`${mortgage.index}-${mortgage.instrument}`} value={mortgage.instrument}>{mortgageLabel(mortgage)}</option>)}</select> : item.record.targetLien.instrumentNumber}</td>
-              <td><input className={styles.editInput} value={item.record.targetLien.reportedPosition} onChange={(event) => patchLienPosition(item.id, event.target.value)} /></td>
-              <td><span className={`${styles.status} ${item.record.qcStatus === "PASS" ? styles.clear : item.record.qcStatus === "FAIL" ? styles.curative : styles.review}`}>{item.record.qcStatus}</span></td>
-              <td><span className={readinessClass(item.record)}>{item.record.foreclosureReadiness.replaceAll("_", " ")}</span></td>
-              <td><div className={styles.curativeList}>{item.record.curativeIssues.length ? item.record.curativeIssues.slice(0, 3).map((issue) => <span className={styles.curativeItem} key={`${issue.code}-${issue.findingNumber}`}>{issue.code}: {issue.title}</span>) : <span>None</span>}{item.record.curativeIssues.length > 3 ? <span>+{item.record.curativeIssues.length - 3} more</span> : null}</div></td>
+          <div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Click a TS/order number to inspect the grounded QC and resolve exceptions.</p></div></div>
+          <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Order Profile</th><th>Borrower</th><th>Property</th><th>Target Lien</th><th>Lien Position</th><th>QC</th><th>Foreclosure Readiness</th><th>Curative / QC Issues</th><th>Source</th></tr></thead><tbody>
+            {items.map((item) => item.review ? <tr key={item.id}>
+              <td><button className={styles.rowButton} onClick={() => setSelectedId(item.id)}>{item.review.record.tsNumber.value}</button></td>
+              <td>{item.review.qc.profileName}</td>
+              <td>{item.review.record.borrower.value}</td>
+              <td>{item.review.record.propertyAddress.value}</td>
+              <td>{item.review.record.targetLien.selectionRequired ? <select className={styles.editInput} value="" onChange={(event) => selectTargetLien(item, event.target.value)}><option value="">Select target lien</option>{item.review.record.mortgages.map((mortgage) => <option value={mortgage.id} key={mortgage.id}>{mortgage.instrumentNumber} · {mortgage.amount}</option>)}</select> : item.review.record.targetLien.instrumentNumber.value}</td>
+              <td><input className={styles.editInput} value={item.review.record.targetLien.position.value === "Needs review" ? "" : item.review.record.targetLien.position.value} placeholder="Needs review" onChange={(event) => setLienPosition(item, event.target.value)} /></td>
+              <td><span className={statusClass(item.review.qc.qcStatus)}>{item.review.qc.qcStatus}</span></td>
+              <td><span className={statusClass(item.review.qc.foreclosureReadiness)}>{item.review.qc.foreclosureReadiness.replaceAll("_", " ")}</span></td>
+              <td><div className={styles.curativeList}>{item.review.qc.curativeIssues.slice(0, 3).map((issue) => <span className={styles.curativeItem} key={`${item.id}-${issue.code}`}>{issue.code}</span>)}{unresolvedDecisions(item) ? <b>{unresolvedDecisions(item)} decision(s) needed</b> : null}</div></td>
               <td>{item.fileName}</td>
-            </tr> : <tr key={item.id}><td colSpan={10}>{item.fileName} — <span className={`${styles.status} ${item.status === "error" ? styles.error : styles.review}`}>{item.status.toUpperCase()}</span>{item.error ? ` · ${item.error}` : ""}</td></tr>)}
+            </tr> : <tr key={item.id}><td colSpan={10}>{item.fileName} — <span className={item.status === "error" ? `${styles.status} ${styles.error}` : `${styles.status} ${styles.review}`}>{item.status.toUpperCase()}</span>{item.error ? ` · ${item.error}` : ""}</td></tr>)}
           </tbody></table></div>
         </section>
-
-        {records.length ? <section className={`${styles.panel} ${styles.exportPanel}`}>
-          <div className={styles.sectionTitle}><div><h2>Client data export</h2><p>The title record stays canonical. The client chooses which grounded fields become columns.</p></div><div className={styles.actions}><button className={styles.secondary} onClick={() => setExportFields(NCALA_DEMO_EXPORT_FIELDS)}>Ncala demo fields</button><button className={styles.secondary} onClick={() => setExportFields(EXPORT_FIELDS.map((field) => field.key))}>All available</button></div></div>
-          <div className={styles.exportGrid}>
-            <div className={styles.exportFields}>{EXPORT_FIELDS.map((field) => <label className={styles.check} key={field.key}><input type="checkbox" checked={exportFields.includes(field.key)} onChange={() => toggleExportField(field.key)} />{field.label}</label>)}</div>
-            <div><p>Demo preset exports <b>TS Number, Borrower Name, Property Address, Lien Position, QC Status, Foreclosure Readiness, and Curative Issues</b>. Add or remove columns without changing the QC engine.</p><div className={styles.actions}><button className={styles.primary} onClick={exportCsv}>Export CSV</button><button className={styles.secondary} onClick={exportJson}>Export JSON</button></div></div>
-          </div>
-        </section> : null}
-
-        {selected?.record && selected.exam ? <section className={styles.panel}>
-          <div className={styles.sectionTitle}><div><h2>{selected.record.tsNumber} · review detail</h2><p>{selected.record.propertyAddress}</p></div><button className={styles.secondary} onClick={() => void exportSelectedVera()}>Export VERA DOCX</button></div>
-          <div className={styles.detailGrid}>
-            <aside className={styles.summaryCard}><dl><dt>State</dt><dd>{selected.record.state}</dd><dt>Detected order profile</dt><dd>{selected.record.searchType}</dd><dt>Borrower</dt><dd>{selected.record.borrowerName}</dd><dt>Target lien</dt><dd>{selected.record.targetLien.instrumentNumber} · {selected.record.targetLien.amount}</dd><dt>Lien position</dt><dd>{selected.record.targetLien.reportedPosition}</dd><dt>QC status</dt><dd>{selected.record.qcStatus}</dd><dt>Foreclosure readiness</dt><dd>{selected.record.foreclosureReadiness}</dd><dt>Critical pass rate</dt><dd>{selected.record.criticalPassRate}%</dd><dt>Packet pages</dt><dd>{selected.exam.packetPageCount || "Not reported"}</dd></dl></aside>
-            <div className={styles.issues}><h3>Curative / exception summary</h3>{selected.record.curativeIssues.length ? selected.record.curativeIssues.map((issue) => <article className={styles.issue} key={`${issue.code}-${issue.findingNumber}`}><div className={styles.issueTop}><h3>Q{issue.findingNumber} · {issue.code}</h3><span className={`${styles.status} ${issue.severity === "BLOCKING" ? styles.curative : issue.severity === "QC" ? styles.qc : styles.review}`}>{issue.severity}</span></div><p>{issue.title}</p><p><b>Next action:</b> {issue.recommendedAction}</p>{issue.evidence.slice(0, 2).map((evidence, index) => <div className={styles.evidence} key={`${evidence.page}-${index}`}><b>Page {evidence.page} · {evidence.documentType}</b><br />“{evidence.quote}”</div>)}</article>) : <div className={styles.notice}>No curative or QC exceptions were identified.</div>}</div>
-          </div>
-          <div className={styles.findings}><h3>VERA exception queue</h3>{selected.exam.findings.filter((item) => !CLEAN.has(item.status)).map((item) => <div className={styles.finding} key={item.number}><div className={styles.issueTop}><strong>Q{item.number} · {item.question}</strong><span className={findingStatusClass(item)}>{item.status.replaceAll("_", " ")}</span></div><p>{item.response}</p><p>{item.proofReason}</p></div>)}<details className={styles.cleanDetails}><summary>Verified PASS / N/A checks ({selected.exam.findings.filter((item) => CLEAN.has(item.status)).length})</summary>{selected.exam.findings.filter((item) => CLEAN.has(item.status)).map((item) => <div className={styles.finding} key={item.number}><strong>Q{item.number} · {item.question}</strong><p>{item.response}</p></div>)}</details></div>
-        </section> : null}
       </> : null}
 
-      {runSheet ? <section className={styles.panel}>
-        <div className={styles.sectionTitle}><div><h2>Generated Run Sheet</h2><p>{runSheet.propertyAddress} · {runSheet.rows.length} rows</p></div><button className={styles.primary} onClick={exportRunSheetCsv}>Export Run Sheet CSV</button></div>
-        <div className={`${styles.tableWrap} ${styles.buildTable}`}><table className={styles.table}><thead><tr><th>#</th><th>Category</th><th>Instrument</th><th>Recording date</th><th>Instrument #</th><th>Parties</th><th>Amount</th><th>Verification</th></tr></thead><tbody>{runSheet.rows.map((row) => <tr key={`${row.sequence}-${row.instrumentNumber}`}><td>{row.sequence}</td><td>{row.category}</td><td>{row.instrumentType}</td><td>{row.recordingDate}</td><td>{row.instrumentNumber}</td><td>{row.grantorBorrower} → {row.granteeBeneficiary}</td><td>{row.amount}</td><td><span className={`${styles.status} ${row.verificationStatus === "VERIFIED" ? styles.clear : styles.review}`}>{row.verificationStatus}</span></td></tr>)}</tbody></table></div>
+      {selected?.review ? <section className={styles.panel}>
+        <div className={styles.sectionTitle}><div><h2>{selected.review.record.tsNumber.value} · Review & curative</h2><p>{selected.review.record.runSheet.detected ? `Functional Run Sheet detected · pages ${selected.review.record.runSheet.pageStart ?? "?"}-${selected.review.record.runSheet.pageEnd ?? "?"}` : "Run Sheet segmentation unresolved — this remains an exception, not N/A."}</p></div><div className={styles.actions}>{selected.exam ? <button className={styles.secondary} onClick={() => exportVera(selected)}>VERA DOCX</button> : null}</div></div>
+        <div className={styles.detailGrid}>
+          <div className={styles.summaryCard}><dl>
+            <dt>Borrower</dt><dd>{selected.review.record.borrower.value}</dd>
+            <dt>Current owner</dt><dd>{selected.review.record.currentOwner.value}</dd>
+            <dt>Property</dt><dd>{selected.review.record.propertyAddress.value}</dd>
+            <dt>State / County</dt><dd>{selected.review.record.state.value} / {selected.review.record.county.value}</dd>
+            <dt>Target lien</dt><dd>{selected.review.record.targetLien.instrumentNumber.value}</dd>
+            <dt>Lien position</dt><dd>{selected.review.record.targetLien.position.value}</dd>
+            <dt>QC profile</dt><dd>{selected.review.qc.profileName} v{selected.review.qc.profileVersion}</dd>
+            <dt>Foreclosure readiness</dt><dd><span className={statusClass(selected.review.qc.foreclosureReadiness)}>{selected.review.qc.foreclosureReadiness.replaceAll("_", " ")}</span></dd>
+          </dl></div>
+          <div className={styles.issues}>{selected.review.qc.checks.map((check) => <div className={styles.issue} key={check.id}>
+            <div className={styles.issueTop}><div><h3>{check.label}</h3><p>{check.summary}</p></div><span className={statusClass(check.status)}>{check.status.replaceAll("_", " ")}</span></div>
+            {check.evidence.slice(0, 2).map((evidence, index) => <div className={styles.evidence} key={`${check.id}-${evidence.page}-${index}`}><b>Page {evidence.page} · {evidence.documentType}</b><br />“{evidence.quote}”</div>)}
+            {!["PASS", "NOT_APPLICABLE"].includes(check.status) ? <div className={styles.actions} style={{ marginTop: 10 }}>
+              <button className={styles.secondary} onClick={() => decide(selected, check, "CONFIRM")}>Confirm finding</button>
+              <button className={styles.secondary} onClick={() => decide(selected, check, "CORRECT")}>Correct finding</button>
+              <button className={styles.danger} onClick={() => decide(selected, check, "NEEDS_EVIDENCE")}>Need more evidence</button>
+              {decisionFor(selected, check.id) ? <span className={styles.profileNote}>Saved: {decisionFor(selected, check.id)}</span> : null}
+            </div> : null}
+          </div>)}</div>
+        </div>
+      </section> : null}
+
+      {completeItems.length ? <section className={`${styles.panel} ${styles.exportPanel}`}>
+        <div className={styles.sectionTitle}><div><h2>Client data export</h2><p>Choose the fields the client needs. CSV and JSON are views over the same canonical title record.</p></div></div>
+        <div className={styles.exportGrid}>
+          <div className={styles.exportFields}>{availableColumns.map((column) => <label className={styles.check} key={column.key}><input type="checkbox" checked={selectedColumns.includes(column.key)} onChange={() => toggleColumn(column.key)} />{column.label}{column.required ? " *" : ""}</label>)}</div>
+          <div>
+            {exportWarnings.length ? <div className={styles.errorBox}><b>Export blocked until these items are resolved:</b>{exportWarnings.slice(0, 12).map((warning) => <div key={warning}>• {warning}</div>)}</div> : <div className={styles.notice}>Export is ready. Required data fields and examiner exception dispositions are complete.</div>}
+            <div className={styles.actions}><button className={styles.primary} disabled={!rows.length || Boolean(exportWarnings.length)} onClick={exportCsv}>Export CSV</button><button className={styles.secondary} disabled={!rows.length || Boolean(exportWarnings.length)} onClick={exportJson}>Export JSON</button></div>
+          </div>
+        </div>
       </section> : null}
     </main>
   </div>;
