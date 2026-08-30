@@ -1,6 +1,6 @@
 {
   "name": "cybridtech-examiner",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -13,7 +13,6 @@
   "dependencies": {
     "@napi-rs/canvas": "1.0.8",
     "@vercel/blob": "2.8.0",
-    "docx": "9.7.1",
     "next": "15.5.24",
     "pdfjs-dist": "5.4.149",
     "react": "19.2.8",
