@@ -180,13 +180,13 @@ export default function DemoPage() {
       response = await fetch("/api/examine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blobPathnames: [pathname], state: stateCode, searchType }),
+        body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType }),
       });
     } else {
       if (file.size > 4_000_000) throw new Error("Large-file storage is not configured for this packet.");
       const form = new FormData();
       form.append("files", file);
-      form.set("state", stateCode);
+      form.set("state", "AUTO");
       form.set("searchType", searchType);
       response = await fetch("/api/examine", { method: "POST", body: form });
     }
@@ -356,11 +356,11 @@ export default function DemoPage() {
       <section className={`${styles.panel} ${styles.setupPanel}`}>
         <div className={styles.setup}>
           <label className={styles.field}>Client / export profile<input value={clientName} onChange={(event) => setClientName(event.target.value)} disabled={busy} /></label>
-          <label className={styles.field}>State<input value={stateCode} maxLength={2} onChange={(event) => setStateCode(event.target.value.toUpperCase())} disabled={busy} /></label>
+          {mode === "build" ? <label className={styles.field}>State<input value={stateCode} maxLength={2} onChange={(event) => setStateCode(event.target.value.toUpperCase())} disabled={busy} /></label> : <div className={styles.profileNote}><b>State</b><br />Auto-detected per packet</div>}
           <label className={styles.field}>QC / order profile<select value={searchType} onChange={(event) => setSearchType(event.target.value as ReviewSearchType)} disabled={busy}>{mode !== "build" ? <option>Auto Detect</option> : null}{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
           <div className={styles.profileNote}>{systemStatus}<br />{readiness === null ? "Checking upload storage…" : readiness.largeFileStorageConfigured ? "Private large-file path ready" : "Direct upload only"}</div>
         </div>
-        {mode !== "build" && searchType === "Auto Detect" ? <div className={styles.notice}>Auto Detect reads each packet's opening title-summary/Run Sheet pages and applies that packet's Current Owner, Two Owner, 2nd Lien, or Foreclosure profile. Mixed-order batches are allowed.</div> : null}
+        {mode !== "build" && searchType === "Auto Detect" ? <div className={styles.notice}>Auto Detect reads each packet's opening title-summary/Run Sheet pages, determines its state and order profile, and applies that packet's Current Owner, Two Owner, 2nd Lien, or Foreclosure rules. Mixed-order and mixed-state batches are allowed.</div> : null}
       </section>
 
       {error ? <div className={styles.errorBox}>{error}</div> : null}
@@ -391,7 +391,7 @@ export default function DemoPage() {
         </section>
 
         <section className={styles.panel}>
-          <div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Detected order type, borrower, target lien, and lien position remain visible before the client data file is exported.</p></div></div>
+          <div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Detected state, order type, borrower, target lien, and lien position remain visible before the client data file is exported.</p></div></div>
           <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Order profile</th><th>Borrower</th><th>Property</th><th>Target lien</th><th>Lien position</th><th>QC</th><th>Foreclosure readiness</th><th>Curative / QC issues</th><th>Source</th></tr></thead><tbody>
             {items.map((item) => item.record && item.exam ? <tr key={item.id}>
               <td><button className={styles.rowButton} onClick={() => setSelectedId(item.id)}>{item.record.tsNumber}</button></td>
@@ -419,7 +419,7 @@ export default function DemoPage() {
         {selected?.record && selected.exam ? <section className={styles.panel}>
           <div className={styles.sectionTitle}><div><h2>{selected.record.tsNumber} · review detail</h2><p>{selected.record.propertyAddress}</p></div><button className={styles.secondary} onClick={() => void exportSelectedVera()}>Export VERA DOCX</button></div>
           <div className={styles.detailGrid}>
-            <aside className={styles.summaryCard}><dl><dt>Detected order profile</dt><dd>{selected.record.searchType}</dd><dt>Borrower</dt><dd>{selected.record.borrowerName}</dd><dt>Target lien</dt><dd>{selected.record.targetLien.instrumentNumber} · {selected.record.targetLien.amount}</dd><dt>Lien position</dt><dd>{selected.record.targetLien.reportedPosition}</dd><dt>QC status</dt><dd>{selected.record.qcStatus}</dd><dt>Foreclosure readiness</dt><dd>{selected.record.foreclosureReadiness}</dd><dt>Critical pass rate</dt><dd>{selected.record.criticalPassRate}%</dd><dt>Packet pages</dt><dd>{selected.exam.packetPageCount || "Not reported"}</dd></dl></aside>
+            <aside className={styles.summaryCard}><dl><dt>State</dt><dd>{selected.record.state}</dd><dt>Detected order profile</dt><dd>{selected.record.searchType}</dd><dt>Borrower</dt><dd>{selected.record.borrowerName}</dd><dt>Target lien</dt><dd>{selected.record.targetLien.instrumentNumber} · {selected.record.targetLien.amount}</dd><dt>Lien position</dt><dd>{selected.record.targetLien.reportedPosition}</dd><dt>QC status</dt><dd>{selected.record.qcStatus}</dd><dt>Foreclosure readiness</dt><dd>{selected.record.foreclosureReadiness}</dd><dt>Critical pass rate</dt><dd>{selected.record.criticalPassRate}%</dd><dt>Packet pages</dt><dd>{selected.exam.packetPageCount || "Not reported"}</dd></dl></aside>
             <div className={styles.issues}><h3>Curative / exception summary</h3>{selected.record.curativeIssues.length ? selected.record.curativeIssues.map((issue) => <article className={styles.issue} key={`${issue.code}-${issue.findingNumber}`}><div className={styles.issueTop}><h3>Q{issue.findingNumber} · {issue.code}</h3><span className={`${styles.status} ${issue.severity === "BLOCKING" ? styles.curative : issue.severity === "QC" ? styles.qc : styles.review}`}>{issue.severity}</span></div><p>{issue.title}</p><p><b>Next action:</b> {issue.recommendedAction}</p>{issue.evidence.slice(0, 2).map((evidence, index) => <div className={styles.evidence} key={`${evidence.page}-${index}`}><b>Page {evidence.page} · {evidence.documentType}</b><br />“{evidence.quote}”</div>)}</article>) : <div className={styles.notice}>No curative or QC exceptions were identified.</div>}</div>
           </div>
           <div className={styles.findings}><h3>VERA exception queue</h3>{selected.exam.findings.filter((item) => !CLEAN.has(item.status)).map((item) => <div className={styles.finding} key={item.number}><div className={styles.issueTop}><strong>Q{item.number} · {item.question}</strong><span className={findingStatusClass(item)}>{item.status.replaceAll("_", " ")}</span></div><p>{item.response}</p><p>{item.proofReason}</p></div>)}<details className={styles.cleanDetails}><summary>Verified PASS / N/A checks ({selected.exam.findings.filter((item) => CLEAN.has(item.status)).length})</summary>{selected.exam.findings.filter((item) => CLEAN.has(item.status)).map((item) => <div className={styles.finding} key={item.number}><strong>Q{item.number} · {item.question}</strong><p>{item.response}</p></div>)}</details></div>
