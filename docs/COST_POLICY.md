@@ -1,16 +1,41 @@
-# CybridTech Examiner AI Cost Policy
+# Cybrid Title AI Cost / Latency Policy
 
-CybridTech Examiner is a high-volume document-audit workload. The default production model is GPT-5.6 Luna for both full-packet audit passes because OpenAI positions Luna for cost-sensitive, high-volume workloads.
+Cybrid Title is a high-volume document-audit workload. Cost controls must never create stale evidence or bypass required grounding, but the system also must not reread a complete title packet with multiple expensive model passes when deterministic software can do the verification.
+
+## Review path
+
+Current Review policy:
+
+- full-packet model: `gpt-5.6-sol`
+- full-packet AI passes: **1**
+- reasoning effort: low
+- deterministic server evidence/structure critic follows the model
+- native PDF text is used when extraction coverage is reliable
+- scan/image-heavy packets currently fall back to OpenAI PDF/vision
+- no automatic second full-PDF verifier
+
+This policy replaced the earlier two-full-pass design after real 65-page packets produced unacceptable latency and rate-limit pressure.
+
+## Build Run Sheet path
+
+Build Run Sheet is currently a separate implementation:
+
+- model defaults to the Build route's cost-controlled model
+- two independent complete builds are performed
+- deterministic row reconciliation marks `VERIFIED` vs `REVIEW`
+
+This path is an architecture convergence item because it does not yet reuse the same extraction/evidence ledger as Review and can therefore duplicate document-read cost.
 
 ## Guardrails
 
-- Default full-packet model: `gpt-5.6-luna`
-- Default independent verifier: `gpt-5.6-luna`
-- No automatic GPT-5.6 Terra or Sol calls.
-- Premium models are blocked unless `OPENAI_ALLOW_PREMIUM_MODEL=true` is explicitly set.
-- The active model is exposed by the non-secret `/api/examine` readiness endpoint.
-- Any future premium escalation must be targeted to disputed evidence/pages rather than re-reading an entire packet by default.
+- Never retry a model call indefinitely.
+- A repeated model answer is not new evidence.
+- Prefer deterministic comparison for exact dates, amounts, instrument numbers, book/page, parties, and other normalized fields.
+- Reuse extraction only for an exact SHA-256 packet match.
+- Never reuse prior property/order content merely to save tokens.
+- Do not perform premium/full-packet escalation automatically for an isolated uncertainty; target disputed evidence/pages when a future escalation path is added.
+- Persist enough usage telemetry to calculate real per-client cost before setting production pricing.
 
-## Current OpenAI public API rates
+## Pricing data
 
-As of 2026-08-28, GPT-5.6 Luna is listed at $0.20 per million input tokens, $0.02 per million cached input tokens, and $1.20 per million output tokens. Prompts over 272K input tokens are priced at 2x input and 1.5x output for the full request. Pricing can change, so production cost telemetry should be checked against the current OpenAI rate card before changing the model policy.
+Do not hard-code external model prices in this repository as a lasting architecture assumption. Provider pricing changes. Billing/pricing decisions should use current provider rates plus persisted production token/usage telemetry.
