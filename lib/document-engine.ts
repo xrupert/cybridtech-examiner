@@ -12,7 +12,7 @@ export interface ExtractedPage {
 }
 
 export interface PacketExtractionLedger {
-  version: 2;
+  version: 3;
   packetHash: string;
   sourceFile: string;
   pageCount: number;
@@ -34,10 +34,11 @@ export interface PreparedPacket {
   extractionMs: number;
 }
 
-const CACHE_PREFIX = "cybrid-title/extraction-ledgers-v2";
+const CACHE_PREFIX = "cybrid-title/extraction-ledgers-v3";
 const MIN_PAGE_CHARS = 80;
 const MIN_PACKET_CHARS = 2000;
 const MIN_NATIVE_COVERAGE = 0.90;
+const MAX_FRONT_SUMMARY_PAGE = 8;
 
 export function hashPacket(buffer: ArrayBuffer): string {
   return createHash("sha256").update(Buffer.from(buffer)).digest("hex");
@@ -62,8 +63,59 @@ function pageHint(text: string): string {
   if (/judgment|lien|restitution|federal tax lien/.test(value)) return "Judgment / Lien";
   if (/legal description|beginning at|thence/.test(value)) return "Legal Description";
   if (/run sheet|abstractor sheet/.test(value)) return "Run Sheet / Abstractor Sheet";
-  if (/title report|search effective|client order/.test(value)) return "Title Report";
+  if (/title\s*search\s*report|title report|search effective|client order/.test(value)) return "Title Report";
   return "Unclassified";
+}
+
+const frontSummarySignals = [
+  /title\s*search\s*report/i,
+  /run\s*sheet|abstractor\s*sheet|abstractor\s*notes/i,
+  /order\s*(?:no\.?|number|#)/i,
+  /search\s*type|search\s*cover|search\s*effective/i,
+  /property\s*information/i,
+  /vesting\s*deed\s*information/i,
+  /chain\s*deed\s*information/i,
+  /mortgage\s*information/i,
+  /assignment\s*1|assignment\s*information/i,
+  /tax\s*information/i,
+  /judgments?,?\s*liens?\s*information/i,
+  /bankruptcy\s*search/i,
+  /additional\s*information/i,
+  /legal\s*information/i,
+];
+
+function frontSummaryScore(text: string): number {
+  return frontSummarySignals.reduce((score, signal) => score + Number(signal.test(text)), 0);
+}
+
+function markFunctionalRunSheetPages(pages: ExtractedPage[]): void {
+  const opening = pages.filter((page) => page.page <= MAX_FRONT_SUMMARY_PAGE);
+  if (!opening.length) return;
+
+  const seedIndex = opening.findIndex((page) => /title\s*search\s*report|run\s*sheet|abstractor\s*sheet/i.test(page.text));
+  if (seedIndex < 0 || opening[seedIndex].page > 3) return;
+
+  let endIndex = seedIndex;
+  let consecutiveNoSignals = 0;
+  for (let index = seedIndex; index < opening.length; index += 1) {
+    const page = opening[index];
+    const score = frontSummaryScore(page.text);
+    const abstractorDivider = /abstractor\s*notes/i.test(page.text);
+
+    if (score > 0 || abstractorDivider) {
+      endIndex = index;
+      consecutiveNoSignals = 0;
+      if (abstractorDivider) break;
+      continue;
+    }
+
+    consecutiveNoSignals += 1;
+    if (consecutiveNoSignals >= 2) break;
+  }
+
+  for (let index = seedIndex; index <= endIndex; index += 1) {
+    opening[index].documentHint = "Run Sheet / Title Summary";
+  }
 }
 
 async function loadCachedLedger(packetHash: string): Promise<PacketExtractionLedger | null> {
@@ -72,7 +124,7 @@ async function loadCachedLedger(packetHash: string): Promise<PacketExtractionLed
     const result = await get(cachePath(packetHash), { access: "private" });
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     const payload = await new Response(result.stream).json() as PacketExtractionLedger;
-    if (payload?.version !== 2 || payload.packetHash !== packetHash || !Array.isArray(payload.pages)) return null;
+    if (payload?.version !== 3 || payload.packetHash !== packetHash || !Array.isArray(payload.pages)) return null;
     return payload;
   } catch {
     return null;
@@ -141,13 +193,15 @@ async function extractNativePdfText(buffer: ArrayBuffer, sourceFile: string, pac
     await pdf.destroy();
   }
 
+  markFunctionalRunSheetPages(pages);
+
   const pageCount = pages.length;
   const textCoverage = pageCount ? usableTextPages / pageCount : 0;
   const lowTextPages = pages.filter((page) => page.needsVisualReview).map((page) => page.page);
   const nativeTextReady = totalCharacters >= MIN_PACKET_CHARS && textCoverage >= MIN_NATIVE_COVERAGE;
 
   return {
-    version: 2,
+    version: 3,
     packetHash,
     sourceFile,
     pageCount,
@@ -189,7 +243,7 @@ export async function preparePdfPacket(buffer: ArrayBuffer, sourceFile: string):
   } catch (error) {
     console.warn("CYBRID_TITLE_NATIVE_EXTRACTION_FAILED", JSON.stringify({ packetHash, sourceFile, message: error instanceof Error ? error.message : "unknown" }));
     ledger = {
-      version: 2,
+      version: 3,
       packetHash,
       sourceFile,
       pageCount: 0,
