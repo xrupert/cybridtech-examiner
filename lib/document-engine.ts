@@ -96,11 +96,7 @@ async function saveLedger(ledger: PacketExtractionLedger): Promise<void> {
 }
 
 async function ensurePdfRuntime(): Promise<void> {
-  const root = globalThis as typeof globalThis & {
-    DOMMatrix?: unknown;
-    ImageData?: unknown;
-    Path2D?: unknown;
-  };
+  const root = globalThis as any;
   if (root.DOMMatrix && root.ImageData && root.Path2D) return;
 
   const canvas = await import("@napi-rs/canvas");
