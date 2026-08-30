@@ -128,16 +128,16 @@ function issueRule(number: number): { code: string; category: string; severity: 
 
 function buildCurativeIssues(exam: VeraExam): CurativeIssue[] {
   return exam.findings
-    .filter((item) => item.status === "FAIL" || ["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"].includes(item.status))
+    .filter((item) => item.status === "FAIL" || (item.critical && ["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"].includes(item.status)))
     .map((item) => {
       const base = issueRule(item.number);
       const unresolved = item.status !== "FAIL";
       return {
         code: unresolved ? `CANNOT_CONFIRM_${base.code}` : base.code,
         category: base.category,
-        severity: unresolved && base.severity === "QC" ? "REVIEW" : base.severity,
+        severity: unresolved && base.severity !== "BLOCKING" ? "REVIEW" : base.severity,
         title: item.response || item.question,
-        recommendedAction: unresolved ? `Evidence is insufficient to close this item. ${base.action}` : base.action,
+        recommendedAction: unresolved ? `Evidence is insufficient to close this critical item. ${base.action}` : base.action,
         findingNumber: item.number,
         evidence: item.evidence,
       } satisfies CurativeIssue;
@@ -146,13 +146,13 @@ function buildCurativeIssues(exam: VeraExam): CurativeIssue[] {
 
 function readiness(issues: CurativeIssue[]): ForeclosureReadiness {
   if (issues.some((item) => item.severity === "BLOCKING")) return "CURATIVE_REQUIRED";
-  if (issues.some((item) => item.code.startsWith("CANNOT_CONFIRM_") || item.severity === "REVIEW")) return "CANNOT_CONFIRM";
+  if (issues.some((item) => item.severity === "REVIEW")) return "CANNOT_CONFIRM";
   if (issues.some((item) => item.severity === "QC")) return "QC_DEFICIENCY";
   return "CLEAR";
 }
 
 function qcStatus(exam: VeraExam): CanonicalTitleRecord["qcStatus"] {
-  if (exam.findings.some((item) => ["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"].includes(item.status))) return "REVIEW";
+  if (exam.findings.some((item) => item.critical && ["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"].includes(item.status))) return "REVIEW";
   return exam.status === "Pass" ? "PASS" : "FAIL";
 }
 
