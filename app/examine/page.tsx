@@ -8,6 +8,7 @@ import { runSheetToCsv, type RunSheetBuild, type RunSheetRow } from "@/lib/run-s
 import type { AuditFinding, EvidenceRef, FindingStatus, VeraExam } from "@/lib/vera";
 import { Logo } from "../components/Logo";
 import styles from "./examine.module.css";
+import clarity from "./review-clarity.module.css";
 
 type Mode = "review" | "build";
 type Phase = "select" | "ready" | "uploading" | "reviewing" | "complete" | "error";
@@ -39,10 +40,12 @@ class RequestError extends Error {
 
 const workflowSteps = [
   ["Upload packet", "Choose the source PDF"],
-  ["Run review", "Read, compare, verify"],
-  ["Review findings", "Approve or override"],
-  ["Export", "VERA DOCX or PDF"],
+  ["Run review", "Extract, compare, verify"],
+  ["Resolve exceptions", "Only items needing judgment"],
+  ["Export", "Final VERA DOCX or PDF"],
 ] as const;
+
+const cleanStatuses = new Set<FindingStatus>(["PASS", "NOT_APPLICABLE"]);
 
 function safeName(value: string) {
   return (value || "title-output").replace(/\.[^/.]+$/, "").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "") || "title-output";
@@ -72,6 +75,13 @@ function statusLabel(status: FindingStatus) {
   return status.replaceAll("_", " ");
 }
 
+function statusClass(status: FindingStatus) {
+  if (status === "FAIL") return clarity.statusFail;
+  if (status === "CANNOT_CONFIRM" || status === "UNDETERMINED" || status === "NOT_STATED") return clarity.statusCannot;
+  if (status === "PASS") return clarity.statusPass;
+  return clarity.statusNA;
+}
+
 async function parseApiResponse(response: Response) {
   const contentType = response.headers.get("content-type") || "";
   let payload: ApiPayload | null = null;
@@ -94,9 +104,9 @@ async function parseApiResponse(response: Response) {
 }
 
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }) {
-  if (!evidence.length) return <div className={styles.evidence}><b>Evidence:</b> Not Stated</div>;
+  if (!evidence.length) return <div className={styles.evidence}><b>Packet evidence:</b> No supporting quote was returned for this item.</div>;
   return <>{evidence.map((item, index) => <div className={styles.evidence} key={`${item.sourceFile || "packet"}-${item.page}-${index}`}>
-    <b>{item.sourceFile ? `${item.sourceFile} · ` : ""}Page {item.page} · {item.documentType}</b>
+    <b>Page {item.page} · {item.documentType}</b>
     <div>“{item.quote}”</div>
     {item.instrumentNumber ? <small>Instrument {item.instrumentNumber}</small> : null}
   </div>)}</>;
@@ -106,11 +116,44 @@ function effectiveStatus(finding: AuditFinding): FindingStatus {
   return finding.reviewDecision === "OVERRIDDEN" && finding.reviewerStatus ? finding.reviewerStatus : finding.status;
 }
 
+function effectiveResponse(finding: AuditFinding): string {
+  return finding.reviewDecision === "OVERRIDDEN" && finding.reviewerResponse ? finding.reviewerResponse : finding.response;
+}
+
+function isCleanFinding(finding: AuditFinding): boolean {
+  return cleanStatuses.has(finding.status);
+}
+
+function decisionResolved(finding: AuditFinding): boolean {
+  if (isCleanFinding(finding) && finding.reviewDecision !== "OVERRIDDEN") return true;
+  if (finding.reviewDecision === "APPROVED") return true;
+  if (finding.reviewDecision === "OVERRIDDEN") {
+    return Boolean(finding.reviewerStatus && finding.reviewerResponse?.trim() && finding.reviewerReason?.trim());
+  }
+  return false;
+}
+
+function hasDistinctRunSheet(exam: VeraExam): boolean {
+  return exam.documents.some((document) => {
+    const type = (document.documentType || "").toLowerCase();
+    const excerpt = (document.excerpt || "").toLowerCase();
+    if (type.includes("title report")) return false;
+    return type.includes("run sheet") || type.includes("abstractor sheet") || /\brun sheet\b|\babstractor sheet\b/.test(excerpt);
+  });
+}
+
 function reviewVerdict(exam: VeraExam) {
   const critical = exam.findings.filter((item) => item.critical);
-  const failed = critical.filter((item) => !["PASS", "NOT_APPLICABLE"].includes(effectiveStatus(item)));
-  const pending = critical.filter((item) => !item.reviewDecision || item.reviewDecision === "PENDING" || item.reviewDecision === "NEEDS_REVIEW");
-  return { status: failed.length ? "Fail" : "Pass", failed: failed.length, pending: pending.length };
+  const failed = critical.filter((item) => !cleanStatuses.has(effectiveStatus(item)));
+  return { status: failed.length ? "Fail" : "Pass", failed: failed.length };
+}
+
+function decisionText(finding: AuditFinding) {
+  if (isCleanFinding(finding) && finding.reviewDecision !== "OVERRIDDEN") return "No action required";
+  if (finding.reviewDecision === "APPROVED") return "Finding confirmed";
+  if (finding.reviewDecision === "OVERRIDDEN") return decisionResolved(finding) ? "Corrected by examiner" : "Finish correction";
+  if (finding.reviewDecision === "NEEDS_REVIEW") return "More evidence needed";
+  return "Decision required";
 }
 
 export default function ExaminePage() {
@@ -134,21 +177,17 @@ export default function ExaminePage() {
 
   const verdict = useMemo(() => exam ? reviewVerdict(exam) : null, [exam]);
   const issueFindings = useMemo(() => exam ? exam.findings
-    .filter((item) => !["PASS", "NOT_APPLICABLE"].includes(item.status))
+    .filter((item) => !isCleanFinding(item))
     .sort((a, b) => Number(b.critical) - Number(a.critical) || a.number - b.number) : [], [exam]);
   const cleanFindings = useMemo(() => exam ? exam.findings
-    .filter((item) => ["PASS", "NOT_APPLICABLE"].includes(item.status))
+    .filter(isCleanFinding)
     .sort((a, b) => a.number - b.number) : [], [exam]);
-  const reviewCounts = useMemo(() => {
-    if (!exam) return { pass: 0, fail: 0, cannot: 0, na: 0 };
-    return exam.findings.reduce((acc, finding) => {
-      if (finding.status === "PASS") acc.pass += 1;
-      else if (finding.status === "FAIL") acc.fail += 1;
-      else if (["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"].includes(finding.status)) acc.cannot += 1;
-      else if (finding.status === "NOT_APPLICABLE") acc.na += 1;
-      return acc;
-    }, { pass: 0, fail: 0, cannot: 0, na: 0 });
-  }, [exam]);
+  const pendingActionCount = useMemo(() => issueFindings.filter((finding) => !decisionResolved(finding)).length, [issueFindings]);
+  const resolvedIssueCount = useMemo(() => issueFindings.filter(decisionResolved).length, [issueFindings]);
+  const effectiveFailCount = useMemo(() => exam ? exam.findings.filter((finding) => effectiveStatus(finding) === "FAIL").length : 0, [exam]);
+  const effectiveCannotCount = useMemo(() => exam ? exam.findings.filter((finding) => ["CANNOT_CONFIRM", "UNDETERMINED", "NOT_STATED"].includes(effectiveStatus(finding))).length : 0, [exam]);
+  const runSheetIncluded = useMemo(() => exam ? hasDistinctRunSheet(exam) : false, [exam]);
+  const exportReady = Boolean(exam && pendingActionCount === 0);
 
   const activeStep = exported ? 4 : (exam || runSheet) ? 3 : phase === "select" ? 1 : 2;
   const busy = phase === "uploading" || phase === "reviewing";
@@ -248,16 +287,19 @@ export default function ExaminePage() {
       if (mode === "review") {
         const incoming = data?.exam as VeraExam | undefined;
         if (!incoming) throw new RequestError("Cybrid Title did not return a VERA review.", "EMPTY_REVIEW", true);
-        incoming.findings = incoming.findings.map((finding) => ({ ...finding, reviewDecision: "PENDING" }));
+        incoming.findings = incoming.findings.map((finding) => ({
+          ...finding,
+          reviewDecision: isCleanFinding(finding) ? "APPROVED" : "PENDING",
+        }));
         setExam(incoming);
         setRunSheet(null);
-        setNotice(`Review complete · ${data.usage?.pages || incoming.pages.length || "packet"} pages · two-pass verification complete.`);
+        setNotice(`Review complete · ${data.usage?.pages || incoming.pages.length || "packet"} pages · clean checks require no action; resolve only the exception queue below.`);
       } else {
         const incoming = data?.build as RunSheetBuild | undefined;
         if (!incoming) throw new RequestError("Cybrid Title did not return a Run Sheet.", "EMPTY_RUN_SHEET", true);
         setRunSheet(incoming);
         setExam(null);
-        setNotice(`Run Sheet complete · ${incoming.sourceFiles.length} source document${incoming.sourceFiles.length === 1 ? "" : "s"} · two-pass verification complete.`);
+        setNotice(`Run Sheet complete · ${incoming.sourceFiles.length} source document${incoming.sourceFiles.length === 1 ? "" : "s"} · two-build reconciliation complete.`);
       }
 
       setPhase("complete");
@@ -271,7 +313,7 @@ export default function ExaminePage() {
     }
   }
 
-  function setReviewDecision(number: number, decision: "APPROVED" | "OVERRIDDEN" | "NEEDS_REVIEW") {
+  function setReviewDecision(number: number, decision: "APPROVED" | "OVERRIDDEN" | "NEEDS_REVIEW" | "PENDING") {
     setExam((current) => current ? {
       ...current,
       findings: current.findings.map((finding) => finding.number === number ? {
@@ -288,19 +330,12 @@ export default function ExaminePage() {
     setExam((current) => current ? { ...current, findings: current.findings.map((item) => item.number === number ? { ...item, ...patch } : item) } : current);
   }
 
-  function approveCleanFindings() {
-    setExam((current) => current ? {
-      ...current,
-      findings: current.findings.map((finding) => ["PASS", "NOT_APPLICABLE"].includes(finding.status) && (!finding.reviewDecision || finding.reviewDecision === "PENDING") ? { ...finding, reviewDecision: "APPROVED" } : finding),
-    } : current);
-  }
-
   function patchRunRow(index: number, key: keyof RunSheetRow, value: string) {
     setRunSheet((current) => current ? { ...current, rows: current.rows.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: value } : row) } : current);
   }
 
   async function downloadVeraDocx() {
-    if (!exam) return;
+    if (!exam || !exportReady) return;
     try {
       const response = await fetch("/api/export/vera-docx", {
         method: "POST",
@@ -323,6 +358,7 @@ export default function ExaminePage() {
   }
 
   function printVera() {
+    if (!exportReady) return;
     setExported(true);
     window.print();
   }
@@ -345,32 +381,56 @@ export default function ExaminePage() {
     setPhase("select");
   }
 
-  function findingCard(finding: AuditFinding) {
-    const needsAttention = !["PASS", "NOT_APPLICABLE"].includes(finding.status);
-    return <article className={`${styles.findingCard} ${finding.critical && needsAttention ? styles.criticalFinding : ""}`} key={finding.number}>
+  function findingCard(finding: AuditFinding, clean = false) {
+    const resolved = decisionResolved(finding);
+    const displayStatus = effectiveStatus(finding);
+    return <article className={`${styles.findingCard} ${finding.critical && !clean ? styles.criticalFinding : ""} ${resolved && !clean ? clarity.findingResolved : ""}`} key={finding.number}>
       <div className={styles.findingTop}>
         <div>
           <span className={styles.findingMeta}>Q{finding.number}{finding.critical ? " · Critical" : ""}</span>
           <h3>{finding.question}</h3>
         </div>
-        <span className={styles.findingStatus}>{statusLabel(finding.status)}</span>
+        <span className={`${styles.findingStatus} ${statusClass(displayStatus)}`}>{statusLabel(displayStatus)}</span>
       </div>
-      <p className={styles.findingBody}><b>Response:</b> {finding.response}</p>
+
+      <div className={clarity.explanationGrid}>
+        <div className={clarity.explanationBox}>
+          <span className={clarity.explanationLabel}>What Cybrid found</span>
+          <p className={clarity.explanationText}>{effectiveResponse(finding)}</p>
+        </div>
+        <div className={clarity.explanationBox}>
+          <span className={clarity.explanationLabel}>Why this status</span>
+          <p className={clarity.explanationText}>{finding.reviewDecision === "OVERRIDDEN" && finding.reviewerReason ? finding.reviewerReason : finding.proofReason}</p>
+        </div>
+      </div>
+
       <EvidenceList evidence={finding.evidence} />
-      <p className={styles.findingBody}><b>Proof / Reason:</b> {finding.proofReason}</p>
-      <div className={styles.findingActions}>
-        <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "APPROVED")}>Approve</button>
-        <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "OVERRIDDEN")}>Override</button>
-        <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "NEEDS_REVIEW")}>Needs review</button>
-        <span className={styles.decision}>Examiner: {finding.reviewDecision || "PENDING"}</span>
-      </div>
+
+      {clean ? <div className={clarity.cleanActions}>
+        <span className={clarity.cleanState}>✓ Auto-verified · no examiner action required</span>
+        <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "OVERRIDDEN")}>Correct this check</button>
+      </div> : <div className={clarity.decisionPanel}>
+        <p className={clarity.decisionPrompt}>Your decision</p>
+        {finding.reviewDecision === "PENDING" || !finding.reviewDecision ? <>
+          <p className={clarity.decisionHelp}>Confirm means you agree this finding accurately describes the packet. Correct changes the finding. “Need more evidence” keeps the review open.</p>
+          <div className={styles.findingActions}>
+            <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "APPROVED")}>Confirm finding</button>
+            <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "OVERRIDDEN")}>Correct finding</button>
+            <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "NEEDS_REVIEW")}>Need more evidence</button>
+          </div>
+        </> : <div className={styles.findingActions}>
+          <span className={`${clarity.decisionState} ${finding.reviewDecision === "NEEDS_REVIEW" ? clarity.followupState : ""}`}>{decisionText(finding)}</span>
+          {finding.reviewDecision !== "OVERRIDDEN" ? <button className={styles.findingButton} onClick={() => setReviewDecision(finding.number, "PENDING")}>Change decision</button> : null}
+        </div>}
+      </div>}
+
       {finding.reviewDecision === "OVERRIDDEN" ? <div className={styles.overrideGrid}>
-        <select value={finding.reviewerStatus || finding.status} onChange={(event) => patchFinding(finding.number, { reviewerStatus: event.target.value as FindingStatus })}>
+        <select value={finding.reviewerStatus || finding.status} onChange={(event) => patchFinding(finding.number, { reviewerStatus: event.target.value as FindingStatus })} aria-label={`Corrected status for question ${finding.number}`}>
           {["PASS", "FAIL", "CANNOT_CONFIRM", "NOT_APPLICABLE", "NOT_STATED"].map((status) => <option key={status}>{status}</option>)}
         </select>
-        <input value={finding.reviewerResponse || ""} onChange={(event) => patchFinding(finding.number, { reviewerResponse: event.target.value })} placeholder="Corrected examiner response" />
+        <input value={finding.reviewerResponse || ""} onChange={(event) => patchFinding(finding.number, { reviewerResponse: event.target.value })} placeholder="Corrected finding" />
         <div />
-        <input value={finding.reviewerReason || ""} onChange={(event) => patchFinding(finding.number, { reviewerReason: event.target.value })} placeholder="Override reason — required for the audit trail" />
+        <input value={finding.reviewerReason || ""} onChange={(event) => patchFinding(finding.number, { reviewerReason: event.target.value })} placeholder="Why you corrected it — required before export" />
       </div> : null}
     </article>;
   }
@@ -393,7 +453,7 @@ export default function ExaminePage() {
         <p className={styles.eyebrow}>Evidence-first title examination</p>
         <h1>Upload. Review. Deliver.</h1>
       </div>
-      <p className={styles.heroCopy}>One title packet in. A source-backed VERA v3 review out. The workflow now stops at each meaningful decision instead of disappearing into a black box.</p>
+      <p className={styles.heroCopy}>Cybrid Title separates what the system verified from what actually needs an examiner decision. Clean checks stay out of the way; exceptions surface with the packet evidence attached.</p>
     </section>
 
     <section className={`${styles.stepper} ${styles.noPrint}`} aria-label="Review workflow">
@@ -411,10 +471,10 @@ export default function ExaminePage() {
     <div className={styles.noPrint}>
       <section className={styles.modeTabs}>
         <button className={`${styles.modeButton} ${mode === "review" ? styles.modeActive : ""}`} onClick={() => changeMode("review")} disabled={busy}>
-          <strong>Review Title Report</strong><span>Existing packet → VERA v3 findings → export</span>
+          <strong>Review Title Report</strong><span>Existing title report packet → VERA review</span>
         </button>
         <button className={`${styles.modeButton} ${mode === "build" ? styles.modeActive : ""}`} onClick={() => changeMode("build")} disabled={busy}>
-          <strong>Build Run Sheet</strong><span>Recorded documents → verified Run Sheet → CSV</span>
+          <strong>Build Run Sheet</strong><span>Recorded documents → new Run Sheet → CSV</span>
         </button>
       </section>
 
@@ -438,7 +498,7 @@ export default function ExaminePage() {
         <div>
           <p className={styles.eyebrow}>Step 1 · Upload</p>
           <h2>{mode === "review" ? "Choose one complete title-report packet" : "Choose the recorded title documents"}</h2>
-          <p>{mode === "review" ? "Selecting a file does not start the AI. You will see the file first, then explicitly start the VERA review." : "Choose one combined PDF or multiple supported title documents. You will confirm them before the Run Sheet build starts."}</p>
+          <p>{mode === "review" ? "Selecting the file does not start the review. Confirm the state and search type, then click Run VERA Review." : "This mode creates a Run Sheet from source documents. It is separate from reviewing an existing title report."}</p>
           <div className={styles.actions}>
             <label className={styles.secondaryButton}>
               {selectedFiles.length ? "Choose different file" : "Choose file"}
@@ -461,15 +521,15 @@ export default function ExaminePage() {
           <div>
             <p className={styles.eyebrow}>Step 2 · Run review</p>
             <h2>{phase === "uploading" ? "Uploading the packet securely" : mode === "review" ? "Title review is in progress" : "Run Sheet build is in progress"}</h2>
-            <p>{phase === "uploading" ? "The source file is moving into private temporary storage. Analysis has not started yet." : mode === "review" ? "Cybrid Title is reading the full packet, applying VERA/RCS rules, collecting page evidence, and running the second verification pass. Keep this tab open." : "Cybrid Title is extracting the recorded documents, building proposed rows, and running the independent verification pass."}</p>
+            <p>{phase === "uploading" ? "The source file is moving into private temporary storage. Analysis has not started yet." : mode === "review" ? "Cybrid Title is extracting the packet, preserving physical page references, applying the VERA/RCS rules, and enforcing the server evidence gate. Keep this tab open." : "Cybrid Title is extracting the recorded documents, building proposed rows, and reconciling the independent builds."}</p>
           </div>
           <span className={styles.statusPill}>{phase === "uploading" ? `${uploadPercent || 1}% uploaded` : "Review running"}</span>
         </div>
         <div className={styles.progressTrack}><div className={styles.progressBar} style={{ width: phase === "uploading" ? `${Math.max(5, uploadPercent)}%` : "72%" }} /></div>
         <div className={styles.processList}>
           <div className={`${styles.processItem} ${phase === "uploading" ? styles.processActive : styles.processDone}`}><strong>Secure upload</strong>{phase === "uploading" ? "Uploading source packet" : "Source packet received"}</div>
-          <div className={`${styles.processItem} ${phase === "reviewing" ? styles.processActive : ""}`}><strong>Read + evaluate</strong>{phase === "reviewing" ? "Reading every page and applying rules" : "Waiting for upload"}</div>
-          <div className={`${styles.processItem} ${phase === "reviewing" ? styles.processActive : ""}`}><strong>Verify + prepare</strong>{phase === "reviewing" ? "Second-pass verification and output preparation" : "Waiting for analysis"}</div>
+          <div className={`${styles.processItem} ${phase === "reviewing" ? styles.processActive : ""}`}><strong>Extract + index</strong>{phase === "reviewing" ? "Reading pages and preserving source locations" : "Waiting for upload"}</div>
+          <div className={`${styles.processItem} ${phase === "reviewing" ? styles.processActive : ""}`}><strong>Audit + evidence gate</strong>{phase === "reviewing" ? "Applying rules and validating supported conclusions" : "Waiting for extraction"}</div>
         </div>
       </section> : null}
 
@@ -477,7 +537,7 @@ export default function ExaminePage() {
         <div className={styles.errorKicker}>Review stopped</div>
         <h2>{quotaError ? "OpenAI API credits are exhausted" : "The review did not complete"}</h2>
         <p>{quotaError ? "Your PDF upload path is working. The AI provider rejected the review because the API account has no remaining credits, so no title analysis was completed." : error}</p>
-        {quotaError ? <p className={styles.errorDetail}>Add credits to the OpenAI API account, then return here and click <b>Retry review</b>. Your selected file is still available in this browser tab, so you do not need to choose it again.</p> : null}
+        {quotaError ? <p className={styles.errorDetail}>Add credits to the OpenAI API account, then return here and click <b>Retry review</b>. Your selected file is still available in this browser tab.</p> : null}
         <div className={styles.actions}>
           {selectedFiles.length ? <button className={styles.primaryButton} onClick={() => void runReview()}>{mode === "review" ? "Retry review" : "Retry build"}</button> : null}
           {quotaError ? <a className={styles.secondaryButton} href="https://platform.openai.com/settings/organization/billing" target="_blank" rel="noreferrer">Open API billing</a> : null}
@@ -488,41 +548,54 @@ export default function ExaminePage() {
 
       {exam ? <section>
         <div className={`${styles.panel} ${styles.reviewHeader}`}>
-          <div>
-            <p className={styles.eyebrow}>Step 3 · Review findings</p>
-            <h2>{exam.clientOrder !== "Not Provided" ? exam.clientOrder : exam.sourceFile}</h2>
-            <p>{exam.propertyAddress} · {exam.searchType} · {verdict?.failed} critical unresolved · {verdict?.pending} critical awaiting examiner decision</p>
+          <div className={clarity.resultIntro}>
+            <div>
+              <p className={styles.eyebrow}>Step 3 · Resolve exceptions</p>
+              <h2 className={clarity.resultTitle}>{exam.clientOrder !== "Not Provided" ? exam.clientOrder : "Review complete"}</h2>
+              <p className={clarity.resultMeta}>{exam.propertyAddress}<br />{exam.searchType} · Current automated verdict: <b>{verdict?.status}</b></p>
+            </div>
           </div>
-          <div className={styles.reviewActions}>
-            <button className={styles.secondaryButton} onClick={approveCleanFindings}>Approve clean findings</button>
-            <button className={styles.primaryButton} onClick={() => void downloadVeraDocx()}>Export VERA DOCX</button>
-            <button className={styles.secondaryButton} onClick={printVera}>Print / Save PDF</button>
+          <div>
+            <div className={styles.reviewActions}>
+              <button className={styles.primaryButton} onClick={() => void downloadVeraDocx()} disabled={!exportReady}>{exportReady ? "Export VERA DOCX" : `Resolve ${pendingActionCount} item${pendingActionCount === 1 ? "" : "s"} to export`}</button>
+              <button className={styles.secondaryButton} onClick={printVera} disabled={!exportReady}>Print / Save PDF</button>
+            </div>
+            {!exportReady ? <p className={clarity.exportBlocked}>Final export stays locked until every exception is confirmed or corrected. Clean PASS/N/A checks do not require approval.</p> : null}
           </div>
         </div>
 
-        <div className={styles.summaryGrid}>
-          <div className={styles.summaryCard}><strong>{reviewCounts.fail}</strong><span>Fail</span></div>
-          <div className={styles.summaryCard}><strong>{reviewCounts.cannot}</strong><span>Cannot confirm</span></div>
-          <div className={styles.summaryCard}><strong>{reviewCounts.pass}</strong><span>Pass</span></div>
-          <div className={styles.summaryCard}><strong>{reviewCounts.na}</strong><span>Not applicable</span></div>
+        <div className={clarity.actionStrip}>
+          <div className={`${clarity.actionMetric} ${pendingActionCount ? clarity.actionMetricPrimary : ""}`}><strong>{pendingActionCount}</strong><span>Need your decision</span></div>
+          <div className={clarity.actionMetric}><strong>{resolvedIssueCount}</strong><span>Exceptions resolved</span></div>
+          <div className={clarity.actionMetric}><strong>{effectiveFailCount}</strong><span>Current FAIL findings</span></div>
+          <div className={clarity.actionMetric}><strong>{effectiveCannotCount}</strong><span>Cannot confirm / follow-up</span></div>
+        </div>
+
+        <div className={clarity.scopeBanner}>
+          <span className={clarity.scopeIcon}>i</span>
+          <div>{runSheetIncluded ? <><span className={clarity.runSheetStatus}>Separate Run Sheet detected.</span> Q19 and Q20 are part of this review and can enter the exception queue.</> : <><span className={clarity.runSheetStatus}>No separate Run Sheet detected.</span> Q19 and Q20 are treated as N/A and require no examiner action. Cybrid Title does not treat the title report itself as a Run Sheet.</>}</div>
         </div>
 
         {notice ? <div className={styles.notice}>{notice}</div> : null}
 
-        <div className={styles.findingList} style={{ marginTop: 12 }}>
-          {issueFindings.length ? issueFindings.map(findingCard) : <div className={`${styles.panel} ${styles.processingCard}`}><h2>No exceptions found.</h2><p>All applicable findings returned PASS or N/A. Review the clean findings below before export.</p></div>}
+        <div className={clarity.sectionHeading}>
+          <div><h3>Exception queue</h3><p>Only findings that can affect the review or need human judgment are shown here.</p></div>
+          <span className={clarity.queueBadge}>{pendingActionCount ? `${pendingActionCount} open` : "Queue clear"}</span>
+        </div>
+        <div className={styles.findingList}>
+          {issueFindings.length ? issueFindings.map((finding) => findingCard(finding, false)) : <div className={`${styles.panel} ${styles.processingCard}`}><h2>No exceptions found.</h2><p>All applicable checks are PASS or N/A. No examiner decisions are required before export.</p></div>}
         </div>
 
         {cleanFindings.length ? <details className={styles.cleanDetails}>
-          <summary>{cleanFindings.length} clean PASS / N/A finding{cleanFindings.length === 1 ? "" : "s"} · expand to inspect</summary>
-          <div className={styles.cleanBody}>{cleanFindings.map(findingCard)}</div>
+          <summary>{cleanFindings.length} verified PASS / N/A check{cleanFindings.length === 1 ? "" : "s"} · no action required · expand only if you want to inspect or correct one</summary>
+          <div className={styles.cleanBody}>{cleanFindings.map((finding) => findingCard(finding, true))}</div>
         </details> : null}
       </section> : null}
 
       {runSheet ? <section>
         <div className={`${styles.panel} ${styles.reviewHeader}`}>
           <div>
-            <p className={styles.eyebrow}>Step 3 · Review Run Sheet</p>
+            <p className={styles.eyebrow}>Step 3 · Review newly built Run Sheet</p>
             <h2>{runSheet.propertyAddress}</h2>
             <p>{runSheet.buildSummary}</p>
           </div>
@@ -549,8 +622,8 @@ export default function ExaminePage() {
       <header className={styles.paperHeader}><Logo height={48} tone="letterhead" /><div><strong>Cybrid Title</strong><br /><span>Title Report Review Summary · VERA v3</span></div></header>
       <p><b>Search Type:</b> {exam.searchType}<br /><b>Client Order#:</b> {exam.clientOrder}<br /><b>Property Address:</b> {exam.propertyAddress}<br /><b>Search Effective Date:</b> {exam.searchEffectiveDate}<br /><b>MIN#:</b> {exam.minNumber}</p>
       <h3>Property & Tax Information</h3>{exam.summaryEvidence.map((field, index) => <p key={index}><b>{field.field}:</b> {field.value}</p>)}
-      <h3>Required Question Responses</h3>{exam.findings.map((finding) => <div key={finding.number} style={{ marginBottom: 12 }}><b>{finding.number}. {finding.question}</b><div>Response: {finding.reviewDecision === "OVERRIDDEN" ? finding.reviewerResponse : finding.response}</div>{finding.evidence.map((evidence, index) => <div key={index}>Evidence — {evidence.sourceFile ? `${evidence.sourceFile}, ` : ""}P{evidence.page}: “{evidence.quote}”</div>)}<div>Examiner decision: {finding.reviewDecision || "PENDING"}</div></div>)}
-      <h3>Title Report / Run Sheet Accuracy Audit</h3><p>Vesting Deed Information: {exam.audit.vestingDeed}<br />Chain of Title: {exam.audit.chainOfTitle}<br />Mortgage Information: {exam.audit.mortgageInformation}<br />Tax Information: {exam.audit.taxInformation}<br />Judgments and Liens: {exam.audit.judgmentsAndLiens}<br />Easements and Restrictions: {exam.audit.easementsAndRestrictions}</p>
+      <h3>Required Question Responses</h3>{exam.findings.map((finding) => <div key={finding.number} style={{ marginBottom: 12 }}><b>{finding.number}. {finding.question}</b><div>Status: {statusLabel(effectiveStatus(finding))}</div><div>Response: {effectiveResponse(finding)}</div>{finding.evidence.map((evidence, index) => <div key={index}>Evidence — P{evidence.page}: “{evidence.quote}”</div>)}<div>Examiner disposition: {decisionText(finding)}</div>{finding.reviewDecision === "OVERRIDDEN" && finding.reviewerReason ? <div>Correction reason: {finding.reviewerReason}</div> : null}</div>)}
+      <h3>{runSheetIncluded ? "Title Report / Run Sheet Accuracy Audit" : "Title Report Accuracy Audit"}</h3><p>Vesting Deed Information: {exam.audit.vestingDeed}<br />Chain of Title: {exam.audit.chainOfTitle}<br />Mortgage Information: {exam.audit.mortgageInformation}<br />Tax Information: {exam.audit.taxInformation}<br />Judgments and Liens: {exam.audit.judgmentsAndLiens}<br />Easements and Restrictions: {exam.audit.easementsAndRestrictions}</p>
       <h3>Pass/Fail Determination</h3><p><b>Status:</b> {verdict?.status}<br /><b>Automated reason:</b> {exam.reason}<br /><b>Notes:</b> {exam.notes || "None"}</p>
     </article> : null}
   </main>;
