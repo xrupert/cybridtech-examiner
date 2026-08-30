@@ -1,5 +1,6 @@
 import { VeraExam, type AuditFinding } from "./vera";
 import { CRITICAL_QUESTION_NUMBERS, isSupportedSearchType } from "./audit-rules";
+import { detectRunSheet } from "./run-sheet-detection";
 
 const acceptable = new Set(["PASS", "NOT_APPLICABLE"]);
 
@@ -13,26 +14,39 @@ function evidenceIsUsable(finding: AuditFinding): boolean {
   );
 }
 
-function hasDistinctRunSheet(exam: VeraExam): boolean {
-  return exam.documents.some((document) => {
-    const type = (document.documentType || "").toLowerCase();
-    const excerpt = (document.excerpt || "").toLowerCase();
-    if (type.includes("title report")) return false;
-    if (type.includes("run sheet") || type.includes("abstractor sheet")) return true;
-    return /\brun sheet\b|\babstractor sheet\b/.test(excerpt);
-  });
-}
-
 function normalizeRunSheetApplicability(exam: VeraExam, finding: AuditFinding): AuditFinding {
-  if (![19, 20].includes(finding.number) || hasDistinctRunSheet(exam)) return finding;
-  return {
-    ...finding,
-    status: "NOT_APPLICABLE",
-    response: "Not applicable — no separate Run Sheet or Abstractor Sheet was supplied in this review packet.",
-    evidence: [],
-    proofReason: "VERA Q19-Q20 apply only when a distinct Run Sheet/Abstractor Sheet is supplied. The title report itself is not treated as a Run Sheet.",
-    commentary: "No examiner action is required for this question unless the order instructions separately required a Run Sheet to be included.",
-  };
+  if (![19, 20].includes(finding.number)) return finding;
+
+  const detection = detectRunSheet(exam);
+  if (detection.detected) {
+    // If packet structure says a Run Sheet exists, it is never acceptable for the model
+    // to waive Q19/Q20 merely because the words "Run Sheet" were not printed on the page.
+    if (finding.status !== "NOT_APPLICABLE") return finding;
+    return {
+      ...finding,
+      status: "CANNOT_CONFIRM",
+      response: finding.number === 19
+        ? "Run Sheet detected, but the MIN check was not completed against it."
+        : "Run Sheet detected, but its entries were not fully reconciled against the supporting documents.",
+      proofReason: `${detection.reason} Q${finding.number} cannot be treated as N/A; the Run Sheet must be checked against the packet.`,
+      commentary: "Run Sheet identification is functional and structural, not dependent on a literal heading or a separate file.",
+    };
+  }
+
+  // Absence of a literal label is not proof that a Run Sheet is absent. When structure is
+  // ambiguous, keep Q19/Q20 open rather than silently converting them to N/A.
+  if (finding.status === "NOT_APPLICABLE") {
+    return {
+      ...finding,
+      status: "CANNOT_CONFIRM",
+      response: "Cannot Confirm — Cybrid Title could not confidently identify the Run Sheet section from the returned packet structure.",
+      evidence: finding.evidence,
+      proofReason: `${detection.reason} Q${finding.number} remains open because a front-of-packet summary/index can function as the Run Sheet even when it is not separately labeled.`,
+      commentary: "Examiner review is required instead of silently waiving the Run Sheet check.",
+    };
+  }
+
+  return finding;
 }
 
 function enforceEvidence(finding: AuditFinding): AuditFinding {
