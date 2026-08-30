@@ -2,6 +2,7 @@ export const PIPELINE_STAGES = [
   "INGEST",
   "EXTRACT",
   "CLASSIFY",
+  "NORMALIZE",
   "CHECK",
   "GROUND",
   "RENDER",
@@ -30,7 +31,8 @@ const NEXT: Record<PipelineStage | "START", readonly PipelineStage[]> = {
   START: ["INGEST", "FAILED"],
   INGEST: ["EXTRACT", "FAILED"],
   EXTRACT: ["CLASSIFY", "FAILED"],
-  CLASSIFY: ["CHECK", "FAILED"],
+  CLASSIFY: ["NORMALIZE", "FAILED"],
+  NORMALIZE: ["CHECK", "FAILED"],
   CHECK: ["GROUND", "FAILED"],
   GROUND: ["RENDER", "FAILED"],
   RENDER: ["RECORD", "FAILED"],
@@ -48,17 +50,8 @@ export function canTransition(from: PipelineStage | "START", to: PipelineStage):
 }
 
 export function advancePipeline(state: PipelineState, to: PipelineStage, detail?: string): PipelineState {
-  if (!canTransition(state.stage, to)) {
-    throw new Error(`Illegal Cybrid Title pipeline transition: ${state.stage} -> ${to}`);
-  }
-
-  const transition: PipelineTransition = {
-    from: state.stage,
-    to,
-    at: new Date().toISOString(),
-    detail,
-  };
-
+  if (!canTransition(state.stage, to)) throw new Error(`Illegal Cybrid Title pipeline transition: ${state.stage} -> ${to}`);
+  const transition: PipelineTransition = { from: state.stage, to, at: new Date().toISOString(), detail };
   return {
     stage: to,
     transitions: [...state.transitions, transition],
@@ -70,10 +63,10 @@ export function advancePipeline(state: PipelineState, to: PipelineStage, detail?
 export function assertCanonicalPipeline(state: PipelineState): void {
   if (state.stage !== "COMPLETE") throw new Error(`Pipeline did not complete; stopped at ${state.stage}.`);
   const stages = state.transitions.map((transition) => transition.to);
-  const expected: PipelineStage[] = ["INGEST", "EXTRACT", "CLASSIFY", "CHECK", "GROUND", "RENDER", "RECORD", "COMPLETE"];
+  const expected: PipelineStage[] = ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD", "COMPLETE"];
   if (stages.length !== expected.length || stages.some((stage, index) => stage !== expected[index])) {
     throw new Error(`Pipeline violated canonical order. Expected ${expected.join(" -> ")}; received ${stages.join(" -> ")}.`);
   }
 }
 
-export const PIPELINE_CONTRACT = "INGEST -> EXTRACT -> CLASSIFY -> CHECK -> GROUND -> RENDER -> RECORD -> COMPLETE";
+export const PIPELINE_CONTRACT = "INGEST -> EXTRACT -> CLASSIFY -> NORMALIZE -> CHECK -> GROUND -> RENDER -> RECORD -> COMPLETE";
