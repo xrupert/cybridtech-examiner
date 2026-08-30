@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { REQUIRED_QUESTIONS, CRITICAL_QUESTION_NUMBERS } from "../lib/audit-rules";
 import { critique } from "../lib/critic";
 import { detectSearchTypeFromText } from "../lib/document-engine";
+import { loopDecision, mayRetry } from "../lib/loop-policy";
 import { advancePipeline, assertCanonicalPipeline, createPipelineState } from "../lib/pipeline";
 import { detectRunSheet } from "../lib/run-sheet-detection";
 import { buildCanonicalTitleRecord, titleRecordsToCsv } from "../lib/title-record";
@@ -28,6 +29,13 @@ function finding(number: number, status: AuditFinding["status"] = "PASS", ev: Ev
 }
 
 function baseExam(): VeraExam {
+  const findings = REQUIRED_QUESTIONS.map((_, index) => finding(index + 1));
+  findings[3] = {
+    ...findings[3],
+    response: "Borrower: Jane Doe; Deed and mortgage recording facts reconcile to the packet.",
+    proofReason: "Borrower: Jane Doe is stated on the mortgage evidence.",
+  };
+
   return emptyVera({
     state: "TX",
     county: "Travis",
@@ -67,7 +75,7 @@ function baseExam(): VeraExam {
       source: "native",
       documentType: "Title Report",
     }],
-    findings: REQUIRED_QUESTIONS.map((_, index) => finding(index + 1)),
+    findings,
   });
 }
 
@@ -78,6 +86,15 @@ function testPipelineGraph() {
   }
   assertCanonicalPipeline(pipeline);
   assert.throws(() => advancePipeline(createPipelineState(), "CHECK"), /Illegal Cybrid Title pipeline transition/);
+}
+
+function testLoopPolicy() {
+  assert.equal(loopDecision("GROUNDING_UNSUPPORTED").action, "REDUCE_TO_CANNOT_CONFIRM");
+  assert.equal(loopDecision("CLASSIFICATION_AMBIGUOUS").action, "REQUIRE_HUMAN_PROFILE");
+  assert.equal(loopDecision("BATCH_ITEM_FAILED").action, "ISOLATE_AND_CONTINUE_BATCH");
+  assert.equal(mayRetry("PROVIDER_RATE_LIMIT", 0), true);
+  assert.equal(mayRetry("PROVIDER_RATE_LIMIT", 2), false);
+  assert.equal(mayRetry("GROUNDING_UNSUPPORTED", 0), false, "A repeated model answer is not new evidence.");
 }
 
 function testRunSheetDetection() {
@@ -94,6 +111,19 @@ function testEvidenceReducerFailsClosed() {
   assert.equal(q4?.status, "CANNOT_CONFIRM", "Unsupported FAIL must be reduced to Cannot Confirm.");
   assert.equal(reduced.status, "Fail");
   assert.equal(reduced.manualReviewRequired, true);
+}
+
+function testCanonicalBorrowerFailsClosed() {
+  const exam = baseExam();
+  exam.findings = exam.findings.map((item) => item.number === 4 ? {
+    ...item,
+    response: "Deed and mortgage recording facts reconcile.",
+    proofReason: "The packet supports the recording facts.",
+  } : item);
+  const record = buildCanonicalTitleRecord({ ...critique(exam), reviewId: "review-borrower", matterRevision: 1 }, "Ncala");
+  assert.equal(record.borrowerName, "Needs review");
+  assert.equal(record.currentOwnerName, "Jane Doe");
+  assert.ok(record.dataQualityWarnings.some((warning) => /Borrower is unresolved/i.test(warning)));
 }
 
 function testCurativeProjection() {
@@ -115,6 +145,7 @@ function testOrderProfileDetection() {
 
 function testExportContract() {
   const record = buildCanonicalTitleRecord({ ...critique(baseExam()), reviewId: "review-2", matterRevision: 1 }, "Ncala");
+  assert.equal(record.borrowerName, "Jane Doe");
   record.borrowerName = 'Jane "JJ" Doe';
   const csv = titleRecordsToCsv([record], ["tsNumber", "borrowerName", "propertyAddress", "lienPosition"]);
   assert.match(csv, /TS Number/);
@@ -129,8 +160,10 @@ function testRuleShape() {
 
 const tests: Array<[string, () => void]> = [
   ["pipeline graph", testPipelineGraph],
+  ["bounded loop policy", testLoopPolicy],
   ["functional Run Sheet detection", testRunSheetDetection],
   ["evidence reducer fail-closed behavior", testEvidenceReducerFailsClosed],
+  ["canonical borrower fail-closed behavior", testCanonicalBorrowerFailsClosed],
   ["curative projection", testCurativeProjection],
   ["order profile detection", testOrderProfileDetection],
   ["CSV export contract", testExportContract],
