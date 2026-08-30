@@ -13,7 +13,7 @@ function mapFindingStatus(status: AuditFinding["status"]): QcStatus {
   return "CANNOT_CONFIRM";
 }
 
-function issueMetadata(id: ProfileCheckId): { code: string; severity: CurativeSeverity; action: string } {
+export function issueMetadata(id: ProfileCheckId): { code: string; severity: CurativeSeverity; action: string } {
   switch (id) {
     case "CURRENT_OWNER_ESTABLISHED": return { code: "CURRENT_OWNER_UNRESOLVED", severity: "BLOCKING", action: "Establish current vesting from the controlling deed evidence before foreclosure referral." };
     case "PRIOR_OWNER_ESTABLISHED": return { code: "PRIOR_OWNER_UNRESOLVED", severity: "BLOCKING", action: "Establish the required prior owner/conveyance from recorded deed evidence." };
@@ -87,12 +87,9 @@ function evaluate(check: QcProfileCheck, record: CanonicalTitleRecord, exam: Ver
         ? result(check, "PASS", `Target lien position established as ${record.targetLien.position.value}.`, record.targetLien.position.evidence)
         : result(check, "CANNOT_CONFIRM", "Lien position was not expressly established by the supplied title evidence.", record.targetLien.position.evidence);
 
-    case "RUN_SHEET_RECONCILES": {
-      if (!record.runSheet.detected) {
-        return result(check, "CANNOT_CONFIRM", "A functional Run Sheet/title-summary section was not confidently segmented. The check remains unresolved rather than being waived as N/A.");
-      }
+    case "RUN_SHEET_RECONCILES":
+      if (!record.runSheet.detected) return result(check, "CANNOT_CONFIRM", "A functional Run Sheet/title-summary section was not confidently segmented. The check remains unresolved rather than being waived as N/A.");
       return legacyResult(check, exam);
-    }
 
     default:
       return legacyResult(check, exam);
@@ -120,20 +117,22 @@ function readiness(issues: CurativeIssue[]): QcProfileResult["foreclosureReadine
   return "CLEAR";
 }
 
-export function runQcProfile(record: CanonicalTitleRecord, exam: VeraExam): QcProfileResult {
-  const profile = profileForOrderType(record.orderType.value);
-  const checks = profile.checks.map((check) => evaluate(check, record, exam));
+export function reduceQcChecks(profile: Pick<QcProfileResult, "profileId" | "profileVersion" | "profileName">, checks: QcCheckResult[]): QcProfileResult {
   const issues = checks.map(curativeIssue).filter((item): item is CurativeIssue => Boolean(item));
   const unresolvedCount = checks.filter((check) => check.status === "CANNOT_CONFIRM").length;
   const failed = checks.some((check) => check.status === "FAIL");
   return {
-    profileId: profile.id,
-    profileVersion: profile.version,
-    profileName: profile.name,
+    ...profile,
     checks,
     qcStatus: unresolvedCount ? "REVIEW" : failed ? "FAIL" : "PASS",
     foreclosureReadiness: readiness(issues),
     curativeIssues: issues,
     unresolvedCount,
   };
+}
+
+export function runQcProfile(record: CanonicalTitleRecord, exam: VeraExam): QcProfileResult {
+  const profile = profileForOrderType(record.orderType.value);
+  const checks = profile.checks.map((check) => evaluate(check, record, exam));
+  return reduceQcChecks({ profileId: profile.id, profileVersion: profile.version, profileName: profile.name }, checks);
 }
