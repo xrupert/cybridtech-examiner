@@ -1,4 +1,4 @@
-import type { AuditFinding, EvidenceRef, VeraExam } from "./vera";
+import type { AuditFinding, EvidenceRef, MortgageRecord, VeraExam } from "./vera";
 
 export type ForeclosureReadiness = "CLEAR" | "QC_DEFICIENCY" | "CURATIVE_REQUIRED" | "CANNOT_CONFIRM";
 export type CurativeSeverity = "BLOCKING" | "REVIEW" | "QC" | "INFO";
@@ -13,6 +13,16 @@ export interface CurativeIssue {
   evidence: EvidenceRef[];
 }
 
+export interface CanonicalMortgage {
+  index: number;
+  instrumentNumber: string;
+  amount: string;
+  beneficiary: string;
+  documentDate: string;
+  bookPage: string;
+  maturityDate: string;
+}
+
 export interface CanonicalTitleRecord {
   recordId: string;
   reviewId: string;
@@ -25,8 +35,11 @@ export interface CanonicalTitleRecord {
   county: string;
   borrowerName: string;
   borrowerBasis: string;
+  currentOwnerName: string;
+  currentOwnerBasis: string;
   propertyAddress: string;
   parcelId: string;
+  mortgages: CanonicalMortgage[];
   targetLien: {
     instrumentNumber: string;
     amount: string;
@@ -38,6 +51,7 @@ export interface CanonicalTitleRecord {
   criticalPassRate: number;
   foreclosureReadiness: ForeclosureReadiness;
   curativeIssues: CurativeIssue[];
+  dataQualityWarnings: string[];
   packetHash: string;
   matterRevision: number;
   effectiveDate: string;
@@ -46,6 +60,7 @@ export interface CanonicalTitleRecord {
 export const EXPORT_FIELDS = [
   { key: "tsNumber", label: "TS Number" },
   { key: "borrowerName", label: "Borrower Name" },
+  { key: "currentOwnerName", label: "Current Owner" },
   { key: "propertyAddress", label: "Property Address" },
   { key: "lienPosition", label: "Lien Position" },
   { key: "targetLienAmount", label: "Target Lien Amount" },
@@ -60,6 +75,7 @@ export const EXPORT_FIELDS = [
   { key: "foreclosureReadiness", label: "Foreclosure Readiness" },
   { key: "curativeCount", label: "Curative Issue Count" },
   { key: "curativeIssues", label: "Curative Issues" },
+  { key: "dataQualityWarnings", label: "Data Quality Warnings" },
   { key: "effectiveDate", label: "Effective Date" },
   { key: "sourceFile", label: "Source File" },
   { key: "reviewId", label: "Review ID" },
@@ -90,29 +106,63 @@ function combinedFindingText(exam: VeraExam): string {
   return exam.findings.map((item) => `${item.response} ${item.proofReason} ${item.commentary || ""}`).join(" \n ");
 }
 
-function extractBorrower(exam: VeraExam): { value: string; basis: string } {
+function extractBorrower(exam: VeraExam): { value: string; basis: string; warning?: string } {
   const q4 = `${finding(exam, 4)?.response || ""} ${finding(exam, 4)?.proofReason || ""}`;
-  const match = q4.match(/\bBorrower\s*(?:is|:|-)?\s*([A-Z][A-Za-z0-9 .,'&()/-]{2,90}?)(?=\s*(?:;|\||,\s*(?:Lender|Holder|Beneficiary|Trustee|Amount|Date|Recorded)|\$|$))/i);
-  if (match?.[1]) return { value: match[1].trim(), basis: "Explicit borrower text in Q4 source reconciliation" };
+  const explicitPatterns = [
+    /\bBorrower\s*(?:is|:|-)?\s*([A-Z][A-Za-z0-9 .,'&()/-]{2,90}?)(?=\s*(?:;|\||,\s*(?:Lender|Holder|Beneficiary|Trustee|Amount|Date|Recorded)|\$|$))/i,
+    /\bMortgagor\s*(?:is|:|-)?\s*([A-Z][A-Za-z0-9 .,'&()/-]{2,90}?)(?=\s*(?:;|\||,\s*(?:Mortgagee|Lender|Holder|Beneficiary|Trustee|Amount|Date|Recorded)|\$|$))/i,
+  ];
+  for (const pattern of explicitPatterns) {
+    const match = q4.match(pattern);
+    if (match?.[1]) return { value: match[1].trim(), basis: "Explicit borrower/mortgagor text in grounded Q4 reconciliation" };
+  }
 
-  const grantee = clean(exam.deed?.grantee);
-  if (grantee) return { value: grantee, basis: "Fallback to current vesting grantee; verify if borrower differs" };
-  return { value: "Needs review", basis: "Borrower was not reliably normalized from the completed review" };
+  return {
+    value: "Needs review",
+    basis: "Borrower was not explicitly normalized from grounded borrower/mortgagor evidence",
+    warning: "Borrower is unresolved. Cybrid Title deliberately did not substitute the current owner/vesting grantee for the borrower.",
+  };
 }
 
-function extractLienPosition(exam: VeraExam): { value: string; basis: string } {
+function extractOwner(exam: VeraExam): { value: string; basis: string } {
+  const grantee = clean(exam.deed?.grantee);
+  if (grantee) return { value: grantee, basis: "Current vesting grantee from completed review" };
+  return { value: "Needs review", basis: "Current owner was not normalized from vesting evidence" };
+}
+
+function extractLienPosition(exam: VeraExam): { value: string; basis: string; warning?: string } {
   if ((exam.mortgages?.length || 0) > 1) {
-    return { value: "Needs review", basis: "Multiple mortgages were extracted; select the foreclosure target lien before assigning its position" };
+    return {
+      value: "Needs review",
+      basis: "Multiple mortgages were extracted; select the foreclosure target lien before assigning its position",
+      warning: "Multiple mortgages exist. Target lien and lien position require an explicit examiner selection/confirmation before client-system export.",
+    };
   }
   const text = combinedFindingText(exam);
   const explicit = text.match(/\b(?:lien\s+position|position)\s*(?:is|:|#|-)?\s*(1st|first|2nd|second|3rd|third|4th|fourth|\d+)\b/i);
-  if (explicit?.[1]) return { value: explicit[1], basis: "Explicit lien-position language in title review evidence" };
-  return { value: "Needs review", basis: "No explicit lien-position statement was established from the packet" };
+  if (explicit?.[1]) return { value: explicit[1], basis: "Explicit lien-position language in grounded title-review evidence" };
+  return {
+    value: "Needs review",
+    basis: "No explicit lien-position statement was established from the packet",
+    warning: "Lien position is unresolved and must not be silently inferred from array/document order.",
+  };
+}
+
+function mortgageRecord(mortgage: MortgageRecord): CanonicalMortgage {
+  return {
+    index: mortgage.index,
+    instrumentNumber: clean(mortgage.instrument) || "Needs review",
+    amount: clean(mortgage.amount) || "Needs review",
+    beneficiary: clean(mortgage.holder) || "Needs review",
+    documentDate: clean(mortgage.date) || "Needs review",
+    bookPage: clean(mortgage.bookPage) || "Needs review",
+    maturityDate: clean(mortgage.maturityDate) || "Needs review",
+  };
 }
 
 function issueRule(number: number): { code: string; category: string; severity: CurativeSeverity; action: string } {
   switch (number) {
-    case 4: return { code: "TITLE_DATA_MISMATCH", category: "Deed / Mortgage", severity: "REVIEW", action: "Reconcile the deed/mortgage parties, amounts, and recording facts before foreclosure referral." };
+    case 4: return { code: "TITLE_DATA_MISMATCH", category: "Deed / Mortgage", severity: "REVIEW", action: "Reconcile deed/mortgage parties, amounts, and recording facts before foreclosure referral." };
     case 5: return { code: "MISSING_OR_MISMATCHED_RECORDING", category: "Recorded Documents", severity: "BLOCKING", action: "Obtain or correct the missing/mismatched recorded instrument and re-run QC." };
     case 6: return { code: "RECORDING_ORDER_ISSUE", category: "Chain", severity: "REVIEW", action: "Confirm the required chain/order sequence and correct the title summary if needed." };
     case 7: return { code: "ASSIGNMENT_CHAIN_GAP", category: "Assignment", severity: "BLOCKING", action: "Cure the assignment/vesting chain or obtain the missing recorded assignment evidence." };
@@ -124,7 +174,7 @@ function issueRule(number: number): { code: string; category: string; severity: 
     case 17: return { code: "MATERIAL_REPORT_ERROR", category: "QC", severity: "QC", action: "Correct the material title-report or Run Sheet error and re-run QC." };
     case 18: return { code: "PLAT_MAP_ISSUE", category: "Plat", severity: "QC", action: "Obtain/correct the referenced plat when required by the selected order profile." };
     case 19: return { code: "MIN_DATA_ISSUE", category: "MERS / MIN", severity: "QC", action: "Correct or confirm the MIN field when applicable." };
-    case 20: return { code: "RUN_SHEET_ACCURACY", category: "Run Sheet", severity: "QC", action: "Correct Run Sheet entries that do not reconcile to the packet evidence." };
+    case 20: return { code: "RUN_SHEET_ACCURACY", category: "Run Sheet", severity: "QC", action: "Correct Run Sheet entries that do not reconcile to packet evidence." };
     default: return { code: `Q${number}_ISSUE`, category: "QC", severity: "INFO", action: "Review and resolve the documented exception." };
   }
 }
@@ -161,9 +211,12 @@ function qcStatus(exam: VeraExam): CanonicalTitleRecord["qcStatus"] {
 
 export function buildCanonicalTitleRecord(exam: VeraExam, clientName = "Ncala"): CanonicalTitleRecord {
   const borrower = extractBorrower(exam);
+  const owner = extractOwner(exam);
   const lienPosition = extractLienPosition(exam);
-  const mortgage = exam.mortgages?.length === 1 ? exam.mortgages[0] : undefined;
+  const mortgages = (exam.mortgages || []).map(mortgageRecord);
+  const target = mortgages.length === 1 ? mortgages[0] : undefined;
   const issues = buildCurativeIssues(exam);
+  const warnings = [borrower.warning, lienPosition.warning].filter((value): value is string => Boolean(value));
 
   return {
     recordId: exam.reviewId || `${exam.packetHash || exam.sourceFile}-${exam.matterRevision || 1}`,
@@ -173,16 +226,19 @@ export function buildCanonicalTitleRecord(exam: VeraExam, clientName = "Ncala"):
     tsNumber: clean(exam.clientOrder) || "Needs review",
     clientOrderNumber: clean(exam.clientOrder) || "Needs review",
     searchType: exam.searchType,
-    state: exam.state,
-    county: exam.county,
+    state: clean(exam.state) || "Needs review",
+    county: clean(exam.county) || "Needs review",
     borrowerName: borrower.value,
     borrowerBasis: borrower.basis,
-    propertyAddress: exam.propertyAddress,
-    parcelId: exam.parcelId,
+    currentOwnerName: owner.value,
+    currentOwnerBasis: owner.basis,
+    propertyAddress: clean(exam.propertyAddress) || "Needs review",
+    parcelId: clean(exam.parcelId) || "Needs review",
+    mortgages,
     targetLien: {
-      instrumentNumber: clean(mortgage?.instrument) || "Needs review",
-      amount: clean(mortgage?.amount) || "Needs review",
-      beneficiary: clean(mortgage?.holder) || "Needs review",
+      instrumentNumber: target?.instrumentNumber || "Needs review",
+      amount: target?.amount || "Needs review",
+      beneficiary: target?.beneficiary || "Needs review",
       reportedPosition: lienPosition.value,
       positionBasis: lienPosition.basis,
     },
@@ -190,9 +246,10 @@ export function buildCanonicalTitleRecord(exam: VeraExam, clientName = "Ncala"):
     criticalPassRate: exam.criticalPassRate,
     foreclosureReadiness: readiness(issues),
     curativeIssues: issues,
+    dataQualityWarnings: warnings,
     packetHash: exam.packetHash,
     matterRevision: exam.matterRevision,
-    effectiveDate: exam.searchEffectiveDate,
+    effectiveDate: clean(exam.searchEffectiveDate) || "Needs review",
   };
 }
 
@@ -200,6 +257,7 @@ export function exportValue(record: CanonicalTitleRecord, key: ExportFieldKey): 
   switch (key) {
     case "tsNumber": return record.tsNumber;
     case "borrowerName": return record.borrowerName;
+    case "currentOwnerName": return record.currentOwnerName;
     case "propertyAddress": return record.propertyAddress;
     case "lienPosition": return record.targetLien.reportedPosition;
     case "targetLienAmount": return record.targetLien.amount;
@@ -214,6 +272,7 @@ export function exportValue(record: CanonicalTitleRecord, key: ExportFieldKey): 
     case "foreclosureReadiness": return record.foreclosureReadiness;
     case "curativeCount": return record.curativeIssues.length;
     case "curativeIssues": return record.curativeIssues.map((item) => `${item.code}: ${item.title}`).join(" | ");
+    case "dataQualityWarnings": return record.dataQualityWarnings.join(" | ");
     case "effectiveDate": return record.effectiveDate;
     case "sourceFile": return record.sourceFile;
     case "reviewId": return record.reviewId;
