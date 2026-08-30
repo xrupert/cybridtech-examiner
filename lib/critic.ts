@@ -13,6 +13,28 @@ function evidenceIsUsable(finding: AuditFinding): boolean {
   );
 }
 
+function hasDistinctRunSheet(exam: VeraExam): boolean {
+  return exam.documents.some((document) => {
+    const type = (document.documentType || "").toLowerCase();
+    const excerpt = (document.excerpt || "").toLowerCase();
+    if (type.includes("title report")) return false;
+    if (type.includes("run sheet") || type.includes("abstractor sheet")) return true;
+    return /\brun sheet\b|\babstractor sheet\b/.test(excerpt);
+  });
+}
+
+function normalizeRunSheetApplicability(exam: VeraExam, finding: AuditFinding): AuditFinding {
+  if (![19, 20].includes(finding.number) || hasDistinctRunSheet(exam)) return finding;
+  return {
+    ...finding,
+    status: "NOT_APPLICABLE",
+    response: "Not applicable — no separate Run Sheet or Abstractor Sheet was supplied in this review packet.",
+    evidence: [],
+    proofReason: "VERA Q19-Q20 apply only when a distinct Run Sheet/Abstractor Sheet is supplied. The title report itself is not treated as a Run Sheet.",
+    commentary: "No examiner action is required for this question unless the order instructions separately required a Run Sheet to be included.",
+  };
+}
+
 function enforceEvidence(finding: AuditFinding): AuditFinding {
   if (finding.status === "NOT_APPLICABLE") return finding;
   if ((finding.status === "PASS" || finding.status === "FAIL") && !evidenceIsUsable(finding)) {
@@ -29,7 +51,9 @@ function enforceEvidence(finding: AuditFinding): AuditFinding {
 
 export function critique(exam: VeraExam): VeraExam {
   const seen = new Set<number>();
-  const findings = exam.findings.map(enforceEvidence);
+  const findings = exam.findings
+    .map((finding) => normalizeRunSheetApplicability(exam, finding))
+    .map(enforceEvidence);
   const malformedQuestions = findings.filter((finding) => {
     const invalid = finding.number < 1 || finding.number > 20 || seen.has(finding.number);
     seen.add(finding.number);

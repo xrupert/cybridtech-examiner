@@ -1,0 +1,231 @@
+.resultIntro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: center;
+}
+
+.resultTitle {
+  margin: 0 0 6px;
+  font-size: clamp(28px, 3.2vw, 42px);
+  font-weight: 520;
+  letter-spacing: -.03em;
+}
+
+.resultMeta {
+  margin: 0;
+  color: #8f929b;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.actionStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.actionMetric {
+  min-height: 84px;
+  padding: 15px 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px;
+  background: rgba(255,255,255,.018);
+}
+
+.actionMetric strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 26px;
+  font-weight: 520;
+}
+
+.actionMetric span {
+  color: #7f828b;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.actionMetricPrimary {
+  border-color: rgba(255,184,41,.34);
+  background: rgba(255,184,41,.045);
+}
+
+.actionMetricPrimary strong { color: #ffca67; }
+
+.scopeBanner {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  margin: 12px 0;
+  padding: 13px 15px;
+  border: 1px solid rgba(47,211,223,.22);
+  border-radius: 11px;
+  background: rgba(47,211,223,.045);
+  color: #bdc3c9;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.scopeIcon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(47,211,223,.12);
+  color: #66e2ea;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sectionHeading {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: end;
+  margin: 22px 0 10px;
+}
+
+.sectionHeading h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 620;
+}
+
+.sectionHeading p {
+  margin: 3px 0 0;
+  color: #787b84;
+  font-size: 10px;
+}
+
+.queueBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255,184,41,.25);
+  border-radius: 999px;
+  color: #ffc45b;
+  font-size: 10px;
+}
+
+.findingResolved {
+  border-color: rgba(21,132,110,.24) !important;
+  background: rgba(21,132,110,.025) !important;
+}
+
+.statusFail { color: #ffb829 !important; }
+.statusCannot { color: #f0a6a6 !important; }
+.statusPass { color: #80d7c5 !important; }
+.statusNA { color: #a4a7af !important; }
+
+.explanationGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, .8fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.explanationBox {
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 9px;
+  background: rgba(255,255,255,.012);
+}
+
+.explanationLabel {
+  display: block;
+  margin-bottom: 6px;
+  color: #797c85;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+
+.explanationText {
+  margin: 0;
+  color: #d8dade;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.decisionPanel {
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+
+.decisionPrompt {
+  margin: 0 0 9px;
+  color: #f1f2f4;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.decisionHelp {
+  margin: 0 0 11px;
+  color: #747780;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.decisionState {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(21,132,110,.10);
+  color: #8edcca;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.followupState {
+  background: rgba(255,184,41,.08);
+  color: #ffc55c;
+}
+
+.cleanState {
+  color: #80d7c5;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.cleanActions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.exportBlocked {
+  max-width: 330px;
+  color: #8b8e96;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.runSheetStatus {
+  font-weight: 700;
+  color: #dfe1e4;
+}
+
+@media (max-width: 900px) {
+  .resultIntro { grid-template-columns: 1fr; }
+  .actionStrip { grid-template-columns: 1fr 1fr; }
+  .explanationGrid { grid-template-columns: 1fr; }
+  .exportBlocked { text-align: left; }
+}
+
+@media (max-width: 600px) {
+  .actionStrip { grid-template-columns: 1fr 1fr; }
+}

@@ -12,7 +12,7 @@ export interface ExtractedPage {
 }
 
 export interface PacketExtractionLedger {
-  version: 1;
+  version: 2;
   packetHash: string;
   sourceFile: string;
   pageCount: number;
@@ -34,7 +34,7 @@ export interface PreparedPacket {
   extractionMs: number;
 }
 
-const CACHE_PREFIX = "cybrid-title/extraction-ledgers";
+const CACHE_PREFIX = "cybrid-title/extraction-ledgers-v2";
 const MIN_PAGE_CHARS = 80;
 const MIN_PACKET_CHARS = 2000;
 const MIN_NATIVE_COVERAGE = 0.90;
@@ -61,7 +61,8 @@ function pageHint(text: string): string {
   if (/release|satisfaction|reconveyance/.test(value)) return "Release / Satisfaction";
   if (/judgment|lien|restitution|federal tax lien/.test(value)) return "Judgment / Lien";
   if (/legal description|beginning at|thence/.test(value)) return "Legal Description";
-  if (/title report|run sheet|search effective|client order/.test(value)) return "Title Report / Run Sheet";
+  if (/run sheet|abstractor sheet/.test(value)) return "Run Sheet / Abstractor Sheet";
+  if (/title report|search effective|client order/.test(value)) return "Title Report";
   return "Unclassified";
 }
 
@@ -71,7 +72,7 @@ async function loadCachedLedger(packetHash: string): Promise<PacketExtractionLed
     const result = await get(cachePath(packetHash), { access: "private" });
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     const payload = await new Response(result.stream).json() as PacketExtractionLedger;
-    if (payload?.version !== 1 || payload.packetHash !== packetHash || !Array.isArray(payload.pages)) return null;
+    if (payload?.version !== 2 || payload.packetHash !== packetHash || !Array.isArray(payload.pages)) return null;
     return payload;
   } catch {
     return null;
@@ -94,7 +95,18 @@ async function saveLedger(ledger: PacketExtractionLedger): Promise<void> {
   }
 }
 
+async function ensurePdfRuntime(): Promise<void> {
+  const root = globalThis as any;
+  if (root.DOMMatrix && root.ImageData && root.Path2D) return;
+
+  const canvas = await import("@napi-rs/canvas");
+  if (!root.DOMMatrix) root.DOMMatrix = canvas.DOMMatrix;
+  if (!root.ImageData) root.ImageData = canvas.ImageData;
+  if (!root.Path2D) root.Path2D = canvas.Path2D;
+}
+
 async function extractNativePdfText(buffer: ArrayBuffer, sourceFile: string, packetHash: string): Promise<PacketExtractionLedger> {
+  await ensurePdfRuntime();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
@@ -135,7 +147,7 @@ async function extractNativePdfText(buffer: ArrayBuffer, sourceFile: string, pac
   const nativeTextReady = totalCharacters >= MIN_PACKET_CHARS && textCoverage >= MIN_NATIVE_COVERAGE;
 
   return {
-    version: 1,
+    version: 2,
     packetHash,
     sourceFile,
     pageCount,
@@ -177,7 +189,7 @@ export async function preparePdfPacket(buffer: ArrayBuffer, sourceFile: string):
   } catch (error) {
     console.warn("CYBRID_TITLE_NATIVE_EXTRACTION_FAILED", JSON.stringify({ packetHash, sourceFile, message: error instanceof Error ? error.message : "unknown" }));
     ledger = {
-      version: 1,
+      version: 2,
       packetHash,
       sourceFile,
       pageCount: 0,
