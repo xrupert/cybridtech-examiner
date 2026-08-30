@@ -9,6 +9,7 @@ export interface EvidenceValue<T = string> {
   value: T;
   state: EvidenceState;
   evidence: EvidenceRef[];
+  evidenceIds?: string[];
   basis: string;
 }
 
@@ -16,6 +17,7 @@ export interface CanonicalParty {
   name: string;
   role: string;
   evidence: EvidenceRef[];
+  evidenceIds?: string[];
 }
 
 export interface CanonicalInstrument {
@@ -28,9 +30,36 @@ export interface CanonicalInstrument {
   amount: string;
   status: string;
   parties: CanonicalParty[];
+  propertyAddress: string;
   legalDescription: string;
+  referencedInstrumentNumbers: string[];
   sourcePages: number[];
   evidence: EvidenceRef[];
+  evidenceIds?: string[];
+}
+
+export interface CanonicalRunSheetEntry {
+  id: string;
+  category: string;
+  instrumentType: string;
+  instrumentNumber: string;
+  bookPage: string;
+  documentDate: string;
+  recordingDate: string;
+  amount: string;
+  parties: string;
+  legalDescription: string;
+  evidence: EvidenceRef[];
+  evidenceIds?: string[];
+}
+
+export interface CanonicalReference {
+  description: string;
+  documentType: string;
+  instrumentNumber: string;
+  bookPage: string;
+  evidence: EvidenceRef[];
+  evidenceIds?: string[];
 }
 
 export interface RunSheetSummary {
@@ -39,10 +68,13 @@ export interface RunSheetSummary {
   pageStart: number | null;
   pageEnd: number | null;
   basis: string;
+  entries: CanonicalRunSheetEntry[];
+  evidence: EvidenceRef[];
+  evidenceIds?: string[];
 }
 
 export interface CanonicalTitleRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   recordId: string;
   reviewId: string;
   packetHash: string;
@@ -66,6 +98,16 @@ export interface CanonicalTitleRecord {
   assignments: CanonicalInstrument[];
   releases: CanonicalInstrument[];
   liens: CanonicalInstrument[];
+  references: CanonicalReference[];
+  flags: {
+    hoa: EvidenceValue;
+    ccrs: EvidenceValue;
+    federalTaxLien: EvidenceValue;
+    bankruptcy: EvidenceValue;
+    plat: EvidenceValue;
+    mers: EvidenceValue;
+    min: EvidenceValue;
+  };
   taxes: {
     status: EvidenceValue;
     fiscalYear: EvidenceValue;
@@ -94,6 +136,7 @@ export interface QcCheckResult {
   summary: string;
   recommendedAction: string;
   evidence: EvidenceRef[];
+  evidenceIds?: string[];
   legacyQuestionNumber?: number;
   sourceStatus?: FindingStatus;
 }
@@ -106,6 +149,7 @@ export interface CurativeIssue {
   recommendedAction: string;
   checkId: string;
   evidence: EvidenceRef[];
+  evidenceIds?: string[];
 }
 
 export interface QcProfileResult {
