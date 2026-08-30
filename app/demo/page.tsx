@@ -14,12 +14,13 @@ import {
   type CanonicalTitleRecord,
   type ExportFieldKey,
 } from "@/lib/title-record";
-import type { AuditFinding, VeraExam } from "@/lib/vera";
+import type { AuditFinding, MortgageRecord, VeraExam } from "@/lib/vera";
 import { Logo } from "../components/Logo";
 import styles from "./demo.module.css";
 
 type Mode = "batch" | "single" | "build";
 type ItemStatus = "queued" | "uploading" | "reviewing" | "complete" | "error";
+type ReviewSearchType = "Auto Detect" | (typeof SEARCH_TYPES)[number];
 
 type Readiness = {
   openAIConfigured: boolean;
@@ -91,11 +92,17 @@ function findingStatusClass(finding: AuditFinding) {
   return `${styles.status} ${styles.review}`;
 }
 
+function mortgageLabel(mortgage: MortgageRecord) {
+  const instrument = mortgage.instrument && mortgage.instrument !== "Not Provided" ? mortgage.instrument : `Mortgage ${mortgage.index}`;
+  const holder = mortgage.holder && mortgage.holder !== "Not Provided" ? mortgage.holder : "holder not stated";
+  return `${instrument} · ${mortgage.amount || "amount not stated"} · ${holder}`;
+}
+
 export default function DemoPage() {
   const [mode, setMode] = useState<Mode>("batch");
   const [clientName, setClientName] = useState("Ncala");
   const [stateCode, setStateCode] = useState("TX");
-  const [searchType, setSearchType] = useState<(typeof SEARCH_TYPES)[number]>("Foreclosure");
+  const [searchType, setSearchType] = useState<ReviewSearchType>("Auto Detect");
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [items, setItems] = useState<BatchItem[]>([]);
@@ -116,12 +123,11 @@ export default function DemoPage() {
   const selected = useMemo(() => items.find((item) => item.id === selectedId) || completed[0], [items, selectedId, completed]);
   const metrics = useMemo(() => ({
     total: items.length,
-    complete: completed.length,
     clear: records.filter((record) => record.foreclosureReadiness === "CLEAR").length,
     curative: records.filter((record) => record.foreclosureReadiness === "CURATIVE_REQUIRED").length,
     review: records.filter((record) => record.foreclosureReadiness === "CANNOT_CONFIRM").length,
     qc: records.filter((record) => record.foreclosureReadiness === "QC_DEFICIENCY").length,
-  }), [items, completed, records]);
+  }), [items, records]);
 
   function resetOutput() {
     setItems([]);
@@ -135,6 +141,8 @@ export default function DemoPage() {
   function changeMode(next: Mode) {
     if (busy) return;
     setMode(next);
+    if (next === "build" && searchType === "Auto Detect") setSearchType("Foreclosure");
+    if (next !== "build" && mode === "build") setSearchType("Auto Detect");
     setFiles([]);
     resetOutput();
   }
@@ -226,19 +234,20 @@ export default function DemoPage() {
     setProgress(0);
     try {
       let response: Response;
+      const buildSearchType = searchType === "Auto Detect" ? "Foreclosure" : searchType;
       if (readiness?.largeFileStorageConfigured) {
         const pathnames: string[] = [];
         for (let index = 0; index < files.length; index += 1) pathnames.push(await uploadOne(files[index], index, files.length));
         response = await fetch("/api/run-sheet", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ blobPathnames: pathnames, state: stateCode, searchType }),
+          body: JSON.stringify({ blobPathnames: pathnames, state: stateCode, searchType: buildSearchType }),
         });
       } else {
         const form = new FormData();
         files.forEach((file) => form.append("files", file));
         form.set("state", stateCode);
-        form.set("searchType", searchType);
+        form.set("searchType", buildSearchType);
         response = await fetch("/api/run-sheet", { method: "POST", body: form });
       }
       const data = await parseResponse(response);
@@ -261,6 +270,23 @@ export default function DemoPage() {
     setItems((current) => current.map((item) => item.id === id && item.record ? {
       ...item,
       record: { ...item.record, targetLien: { ...item.record.targetLien, reportedPosition: value, positionBasis: "Examiner/demo correction" } },
+    } : item));
+  }
+
+  function selectTargetLien(id: string, mortgage: MortgageRecord) {
+    setItems((current) => current.map((item) => item.id === id && item.record ? {
+      ...item,
+      record: {
+        ...item.record,
+        targetLien: {
+          ...item.record.targetLien,
+          instrumentNumber: mortgage.instrument || "Needs review",
+          amount: mortgage.amount || "Needs review",
+          beneficiary: mortgage.holder || "Needs review",
+          reportedPosition: "Needs review",
+          positionBasis: "Target lien selected by examiner; confirm its lien position from packet evidence",
+        },
+      },
     } : item));
   }
 
@@ -303,6 +329,12 @@ export default function DemoPage() {
     downloadText(`${safeName(runSheet.propertyAddress)}-run-sheet.csv`, runSheetToCsv(runSheet), "text/csv;charset=utf-8");
   }
 
+  const systemStatus = readiness === null
+    ? "Checking system…"
+    : readiness.openAIConfigured
+      ? `AI ready · ${readiness.documentModel || "review model"}`
+      : "AI not configured";
+
   return <div className={styles.shell}>
     <header className={styles.nav}>
       <Link href="/" className={styles.brand}><Logo height={32} /><span className={styles.brandName}>CYBRID TITLE</span></Link>
@@ -325,9 +357,10 @@ export default function DemoPage() {
         <div className={styles.setup}>
           <label className={styles.field}>Client / export profile<input value={clientName} onChange={(event) => setClientName(event.target.value)} disabled={busy} /></label>
           <label className={styles.field}>State<input value={stateCode} maxLength={2} onChange={(event) => setStateCode(event.target.value.toUpperCase())} disabled={busy} /></label>
-          <label className={styles.field}>QC / order profile<select value={searchType} onChange={(event) => setSearchType(event.target.value as (typeof SEARCH_TYPES)[number])} disabled={busy}>{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
-          <div className={styles.profileNote}>{readiness?.openAIConfigured ? `AI ready · ${readiness.documentModel || "review model"}` : "AI not configured"}<br />{readiness?.largeFileStorageConfigured ? "Private large-file path ready" : "Direct upload only"}</div>
+          <label className={styles.field}>QC / order profile<select value={searchType} onChange={(event) => setSearchType(event.target.value as ReviewSearchType)} disabled={busy}>{mode !== "build" ? <option>Auto Detect</option> : null}{SEARCH_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+          <div className={styles.profileNote}>{systemStatus}<br />{readiness === null ? "Checking upload storage…" : readiness.largeFileStorageConfigured ? "Private large-file path ready" : "Direct upload only"}</div>
         </div>
+        {mode !== "build" && searchType === "Auto Detect" ? <div className={styles.notice}>Auto Detect reads each packet's opening title-summary/Run Sheet pages and applies that packet's Current Owner, Two Owner, 2nd Lien, or Foreclosure profile. Mixed-order batches are allowed.</div> : null}
       </section>
 
       {error ? <div className={styles.errorBox}>{error}</div> : null}
@@ -341,7 +374,7 @@ export default function DemoPage() {
           </div>
           <div className={styles.actions}>
             <label className={styles.secondary}>{files.length ? "Choose different files" : "Choose files"}<input type="file" hidden accept=".pdf,.txt,.md" multiple={mode !== "single"} disabled={busy} onChange={(event) => { chooseFiles(event.target.files); event.currentTarget.value = ""; }} /></label>
-            {files.length ? <button className={styles.primary} onClick={() => void (mode === "build" ? buildRunSheet() : runQc())} disabled={busy || !readiness?.openAIConfigured}>{busy ? "Processing…" : mode === "build" ? "Build Run Sheet" : mode === "batch" ? `Run Batch QC (${files.length})` : "Run Title QC"}</button> : null}
+            {files.length ? <button className={styles.primary} onClick={() => void (mode === "build" ? buildRunSheet() : runQc())} disabled={busy || readiness?.openAIConfigured === false}>{busy ? "Processing…" : mode === "build" ? "Build Run Sheet" : mode === "batch" ? `Run Batch QC (${files.length})` : "Run Title QC"}</button> : null}
           </div>
         </div>
         {files.length ? <div className={styles.fileList}>{files.map((file) => <span className={styles.fileChip} key={`${file.name}-${file.size}`}>{file.name} · {fileSize(file.size)}</span>)}</div> : null}
@@ -358,23 +391,25 @@ export default function DemoPage() {
         </section>
 
         <section className={styles.panel}>
-          <div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Borrower and lien position remain editable before export when the packet did not establish them cleanly.</p></div></div>
-          <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Borrower</th><th>Property</th><th>Lien position</th><th>QC</th><th>Foreclosure readiness</th><th>Curative / QC issues</th><th>Source</th></tr></thead><tbody>
-            {items.map((item) => item.record ? <tr key={item.id}>
+          <div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Detected order type, borrower, target lien, and lien position remain visible before the client data file is exported.</p></div></div>
+          <div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Order profile</th><th>Borrower</th><th>Property</th><th>Target lien</th><th>Lien position</th><th>QC</th><th>Foreclosure readiness</th><th>Curative / QC issues</th><th>Source</th></tr></thead><tbody>
+            {items.map((item) => item.record && item.exam ? <tr key={item.id}>
               <td><button className={styles.rowButton} onClick={() => setSelectedId(item.id)}>{item.record.tsNumber}</button></td>
+              <td>{item.record.searchType}</td>
               <td><input className={styles.editInput} value={item.record.borrowerName} onChange={(event) => patchRecord(item.id, { borrowerName: event.target.value, borrowerBasis: "Examiner/demo correction" })} /></td>
               <td>{item.record.propertyAddress}</td>
+              <td>{item.exam.mortgages.length > 1 ? <select className={styles.editInput} value={item.record.targetLien.instrumentNumber === "Needs review" ? "" : item.record.targetLien.instrumentNumber} onChange={(event) => { const mortgage = item.exam?.mortgages.find((entry) => entry.instrument === event.target.value); if (mortgage) selectTargetLien(item.id, mortgage); }}><option value="">Select target lien</option>{item.exam.mortgages.map((mortgage) => <option key={`${mortgage.index}-${mortgage.instrument}`} value={mortgage.instrument}>{mortgageLabel(mortgage)}</option>)}</select> : item.record.targetLien.instrumentNumber}</td>
               <td><input className={styles.editInput} value={item.record.targetLien.reportedPosition} onChange={(event) => patchLienPosition(item.id, event.target.value)} /></td>
               <td><span className={`${styles.status} ${item.record.qcStatus === "PASS" ? styles.clear : item.record.qcStatus === "FAIL" ? styles.curative : styles.review}`}>{item.record.qcStatus}</span></td>
               <td><span className={readinessClass(item.record)}>{item.record.foreclosureReadiness.replaceAll("_", " ")}</span></td>
               <td><div className={styles.curativeList}>{item.record.curativeIssues.length ? item.record.curativeIssues.slice(0, 3).map((issue) => <span className={styles.curativeItem} key={`${issue.code}-${issue.findingNumber}`}>{issue.code}: {issue.title}</span>) : <span>None</span>}{item.record.curativeIssues.length > 3 ? <span>+{item.record.curativeIssues.length - 3} more</span> : null}</div></td>
               <td>{item.fileName}</td>
-            </tr> : <tr key={item.id}><td colSpan={8}>{item.fileName} — <span className={`${styles.status} ${item.status === "error" ? styles.error : styles.review}`}>{item.status.toUpperCase()}</span>{item.error ? ` · ${item.error}` : ""}</td></tr>)}
+            </tr> : <tr key={item.id}><td colSpan={10}>{item.fileName} — <span className={`${styles.status} ${item.status === "error" ? styles.error : styles.review}`}>{item.status.toUpperCase()}</span>{item.error ? ` · ${item.error}` : ""}</td></tr>)}
           </tbody></table></div>
         </section>
 
         {records.length ? <section className={`${styles.panel} ${styles.exportPanel}`}>
-          <div className={styles.sectionTitle}><div><h2>Client data export</h2><p>The title record stays canonical. The client chooses which fields become columns.</p></div><div className={styles.actions}><button className={styles.secondary} onClick={() => setExportFields(NCALA_DEMO_EXPORT_FIELDS)}>Ncala demo fields</button><button className={styles.secondary} onClick={() => setExportFields(EXPORT_FIELDS.map((field) => field.key))}>All available</button></div></div>
+          <div className={styles.sectionTitle}><div><h2>Client data export</h2><p>The title record stays canonical. The client chooses which grounded fields become columns.</p></div><div className={styles.actions}><button className={styles.secondary} onClick={() => setExportFields(NCALA_DEMO_EXPORT_FIELDS)}>Ncala demo fields</button><button className={styles.secondary} onClick={() => setExportFields(EXPORT_FIELDS.map((field) => field.key))}>All available</button></div></div>
           <div className={styles.exportGrid}>
             <div className={styles.exportFields}>{EXPORT_FIELDS.map((field) => <label className={styles.check} key={field.key}><input type="checkbox" checked={exportFields.includes(field.key)} onChange={() => toggleExportField(field.key)} />{field.label}</label>)}</div>
             <div><p>Demo preset exports <b>TS Number, Borrower Name, Property Address, Lien Position, QC Status, Foreclosure Readiness, and Curative Issues</b>. Add or remove columns without changing the QC engine.</p><div className={styles.actions}><button className={styles.primary} onClick={exportCsv}>Export CSV</button><button className={styles.secondary} onClick={exportJson}>Export JSON</button></div></div>
@@ -384,7 +419,7 @@ export default function DemoPage() {
         {selected?.record && selected.exam ? <section className={styles.panel}>
           <div className={styles.sectionTitle}><div><h2>{selected.record.tsNumber} · review detail</h2><p>{selected.record.propertyAddress}</p></div><button className={styles.secondary} onClick={() => void exportSelectedVera()}>Export VERA DOCX</button></div>
           <div className={styles.detailGrid}>
-            <aside className={styles.summaryCard}><dl><dt>Borrower</dt><dd>{selected.record.borrowerName}</dd><dt>Target lien</dt><dd>{selected.record.targetLien.instrumentNumber} · {selected.record.targetLien.amount}</dd><dt>Lien position</dt><dd>{selected.record.targetLien.reportedPosition}</dd><dt>QC status</dt><dd>{selected.record.qcStatus}</dd><dt>Foreclosure readiness</dt><dd>{selected.record.foreclosureReadiness}</dd><dt>Critical pass rate</dt><dd>{selected.record.criticalPassRate}%</dd><dt>Packet pages</dt><dd>{selected.exam.packetPageCount || "Not reported"}</dd></dl></aside>
+            <aside className={styles.summaryCard}><dl><dt>Detected order profile</dt><dd>{selected.record.searchType}</dd><dt>Borrower</dt><dd>{selected.record.borrowerName}</dd><dt>Target lien</dt><dd>{selected.record.targetLien.instrumentNumber} · {selected.record.targetLien.amount}</dd><dt>Lien position</dt><dd>{selected.record.targetLien.reportedPosition}</dd><dt>QC status</dt><dd>{selected.record.qcStatus}</dd><dt>Foreclosure readiness</dt><dd>{selected.record.foreclosureReadiness}</dd><dt>Critical pass rate</dt><dd>{selected.record.criticalPassRate}%</dd><dt>Packet pages</dt><dd>{selected.exam.packetPageCount || "Not reported"}</dd></dl></aside>
             <div className={styles.issues}><h3>Curative / exception summary</h3>{selected.record.curativeIssues.length ? selected.record.curativeIssues.map((issue) => <article className={styles.issue} key={`${issue.code}-${issue.findingNumber}`}><div className={styles.issueTop}><h3>Q{issue.findingNumber} · {issue.code}</h3><span className={`${styles.status} ${issue.severity === "BLOCKING" ? styles.curative : issue.severity === "QC" ? styles.qc : styles.review}`}>{issue.severity}</span></div><p>{issue.title}</p><p><b>Next action:</b> {issue.recommendedAction}</p>{issue.evidence.slice(0, 2).map((evidence, index) => <div className={styles.evidence} key={`${evidence.page}-${index}`}><b>Page {evidence.page} · {evidence.documentType}</b><br />“{evidence.quote}”</div>)}</article>) : <div className={styles.notice}>No curative or QC exceptions were identified.</div>}</div>
           </div>
           <div className={styles.findings}><h3>VERA exception queue</h3>{selected.exam.findings.filter((item) => !CLEAN.has(item.status)).map((item) => <div className={styles.finding} key={item.number}><div className={styles.issueTop}><strong>Q{item.number} · {item.question}</strong><span className={findingStatusClass(item)}>{item.status.replaceAll("_", " ")}</span></div><p>{item.response}</p><p>{item.proofReason}</p></div>)}<details className={styles.cleanDetails}><summary>Verified PASS / N/A checks ({selected.exam.findings.filter((item) => CLEAN.has(item.status)).length})</summary>{selected.exam.findings.filter((item) => CLEAN.has(item.status)).map((item) => <div className={styles.finding} key={item.number}><strong>Q{item.number} · {item.question}</strong><p>{item.response}</p></div>)}</details></div>
