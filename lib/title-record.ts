@@ -101,6 +101,9 @@ function extractBorrower(exam: VeraExam): { value: string; basis: string } {
 }
 
 function extractLienPosition(exam: VeraExam): { value: string; basis: string } {
+  if ((exam.mortgages?.length || 0) > 1) {
+    return { value: "Needs review", basis: "Multiple mortgages were extracted; select the foreclosure target lien before assigning its position" };
+  }
   const text = combinedFindingText(exam);
   const explicit = text.match(/\b(?:lien\s+position|position)\s*(?:is|:|#|-)?\s*(1st|first|2nd|second|3rd|third|4th|fourth|\d+)\b/i);
   if (explicit?.[1]) return { value: explicit[1], basis: "Explicit lien-position language in title review evidence" };
@@ -159,7 +162,7 @@ function qcStatus(exam: VeraExam): CanonicalTitleRecord["qcStatus"] {
 export function buildCanonicalTitleRecord(exam: VeraExam, clientName = "Ncala"): CanonicalTitleRecord {
   const borrower = extractBorrower(exam);
   const lienPosition = extractLienPosition(exam);
-  const mortgage = exam.mortgages?.[0];
+  const mortgage = exam.mortgages?.length === 1 ? exam.mortgages[0] : undefined;
   const issues = buildCurativeIssues(exam);
 
   return {
