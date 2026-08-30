@@ -27,6 +27,7 @@ export interface RawInstrument {
   amount: string;
   status: string;
   parties: RawParty[];
+  propertyAddress: string;
   legalDescription: string;
   referencedInstrumentNumbers: string[];
   evidence: RawEvidenceAnchor[];
