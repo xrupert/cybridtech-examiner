@@ -29,6 +29,7 @@ export interface QcProfile {
   name: string;
   orderType: string;
   checks: QcProfileCheck[];
+  unresolved?: boolean;
 }
 
 const COMMON: QcProfileCheck[] = [
@@ -63,6 +64,15 @@ export const QC_PROFILES: QcProfile[] = [
   ]),
 ];
 
+export const UNRESOLVED_QC_PROFILE: QcProfile = {
+  id: "profile-unresolved-v1",
+  version: 1,
+  name: "QC Profile Requires Examiner Selection",
+  orderType: "Needs review",
+  unresolved: true,
+  checks: COMMON,
+};
+
 export function profileForOrderType(orderType: string): QcProfile {
-  return QC_PROFILES.find((item) => item.orderType.toLowerCase() === orderType.trim().toLowerCase()) || QC_PROFILES[3];
+  return QC_PROFILES.find((item) => item.orderType.toLowerCase() === orderType.trim().toLowerCase()) || UNRESOLVED_QC_PROFILE;
 }
