@@ -1,9 +1,10 @@
-export const AUDIT_RULE_VERSION = "CYBRID-VERA3-RCS-QRC-LDP-2026-08-28";
+export const AUDIT_RULE_VERSION = "CYBRID-VERA3-RCS-QRC-LDP-NCALA-DEMO-2026-08-30";
 
 export const SEARCH_TYPES = [
   "Foreclosure",
   "2nd Lien",
   "Current Owner Search",
+  "Two Owner Search",
 ] as const;
 
 export type SupportedSearchType = (typeof SEARCH_TYPES)[number];
@@ -115,6 +116,12 @@ export const RCS_ORDER_REQUIREMENTS: Record<SupportedSearchType, readonly string
     "Search back to a non-family Full Value Transfer Deed with a concurrently filed purchase-money mortgage from an institutional lender unless the order instructions say otherwise.",
     "Required document copies include all pages.",
   ],
+  "Two Owner Search": [
+    "Demo client requirement supplied by the owner on 2026-08-30: establish the current owner and the immediately prior owner from deed evidence in the supplied title packet.",
+    "The title summary must identify and reconcile the two ownership transfers used to establish the current and prior owners, including the deed parties and recording facts available in the packet.",
+    "If the packet does not establish both owners or a deed needed to prove the two-owner chain is referenced but unavailable, use CANNOT_CONFIRM rather than inventing the missing owner or transfer.",
+    "Apply the same evidence, Run Sheet reconciliation, legal-description, and no-assumption rules used by the core VERA review.",
+  ],
 } as const;
 
 export const AUTHORITATIVE_RULE_PACKS = [
@@ -123,6 +130,7 @@ export const AUTHORITATIVE_RULE_PACKS = [
   ...RCS_ORDER_REQUIREMENTS.Foreclosure.map((rule) => `RCS Foreclosure: ${rule}`),
   ...RCS_ORDER_REQUIREMENTS["2nd Lien"].map((rule) => `RCS 2nd Lien: ${rule}`),
   ...RCS_ORDER_REQUIREMENTS["Current Owner Search"].map((rule) => `RCS Current Owner Search: ${rule}`),
+  ...RCS_ORDER_REQUIREMENTS["Two Owner Search"].map((rule) => `Ncala/Two Owner demo profile: ${rule}`),
   "Recovered Title Report Auditor no-assumption/evidence instructions supplied by owner.",
   "Title Report Forensic Audit – Quick Reference Checklist supplied by owner on 2026-08-28.",
   ...QUICK_REFERENCE_RULES.map((rule) => `Quick Reference: ${rule}`),
