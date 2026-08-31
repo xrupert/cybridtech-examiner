@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "verify": "tsx scripts/architecture-harness.ts",
+    "verify": "tsx scripts/architecture-harness.ts && tsx scripts/lien-intelligence-harness.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run verify && next build",
     "ci": "npm run verify && npm run typecheck && next build",
