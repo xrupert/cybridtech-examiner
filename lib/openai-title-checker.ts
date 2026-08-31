@@ -5,7 +5,7 @@ import { validateEvidenceIds } from "./title-evidence-ledger";
 
 const OPENAI_API = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-5.6-sol";
-const MAX_OUTPUT_TOKENS = 7000;
+const MAX_OUTPUT_TOKENS = 9000;
 
 const checkerSchema = {
   type: "object", additionalProperties: false, required: ["resolutions"],
@@ -23,7 +23,7 @@ async function openAIFetch(url: string, init: RequestInit): Promise<Response> {
 function extractOutputText(data: unknown): string {
   const payload = data as { output_text?: string; output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }> };
   if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
-  for (const item of payload.output || []) { if (item.type !== "message") continue; for (const content of item.content || []) if (content.type === "output_text" && typeof content.text === "string") return content.text; }
+  for (const item of payload.output || []) if (item.type === "message") for (const content of item.content || []) if (content.type === "output_text" && typeof content.text === "string") return content.text;
   throw new Error("OpenAI title checker returned no structured output.");
 }
 
@@ -49,20 +49,27 @@ function instructions(profile: QcProfileResult, unresolved: QcProfileResult["che
   return `You are the CHECK stage of Cybrid Title. You are NOT reading the original PDF. The packet has already been extracted into a canonical title record and immutable evidence ledger. Resolve only the listed unresolved checks from those facts and evidence nodes.
 
 NON-NEGOTIABLE
-- Do not invent facts, quotes, pages, instruments, dates, amounts, relationships, or evidence IDs.
+- Do not invent facts, quotes, pages, instruments, dates, amounts, relationships, legal rules, or evidence IDs.
 - evidenceIds may contain ONLY IDs supplied in EVIDENCE LEDGER.
 - PASS or FAIL requires one or more directly supporting evidence IDs. If evidence is insufficient, return CANNOT_CONFIRM.
 - NOT_APPLICABLE is allowed only when the selected order profile makes the check genuinely inapplicable.
-- Do not infer lien priority from document sequence.
-- Do not treat global PDF page order as recording order.
+- Do not infer lien priority from document sequence and do not treat global PDF page order as recording order.
 - MERS: a mortgage/DOT naming MERS with a MIN does not create an assignment requirement solely because MERS is beneficiary.
 - Legal-description formatting-only differences are not material. Changed/omitted legal calls or controlling references may be material when supported.
 - Missing referenced source documents remain CANNOT_CONFIRM; absence is not negative proof.
+- LOAN_STATUS_REVIEWED: distinguish an open/unreleased recorded lien from an actual payment default. Do not call a loan Default unless default/foreclosure evidence supports it.
+- RECOURSE_REVIEWED: use only express recourse/non-recourse language; otherwise CANNOT_CONFIRM / Not Provided.
 
-TITLE REPORT VS RUN SHEET
-- canonicalRecord.titleSummary is the opening TITLE REPORT / TITLE SEARCH SUMMARY used for report-to-source accuracy review.
-- canonicalRecord.distinctRunSheet is ONLY a separately identifiable Run Sheet or Abstractor Sheet.
-- Never call the title report a Run Sheet. If distinctRunSheet.detected=false, Run Sheet checks are N/A and should already have been closed deterministically.
+VERA 20
+- The selected profile includes the complete Vera v3 twenty-question review. Resolve the question actually stated in each LABEL.
+- Informational questions such as loan document type or recording date may PASS when the requested fact is directly established by evidence.
+- HOA/CC&R/name-and-amount questions must not infer a negative from silence. RCS 2nd Lien can be NOT_APPLICABLE where the order instructions omit HOA/CC&R material.
+- MIN_RUN_SHEET_REVIEWED asks whether the MIN is present in the applicable report/run-sheet summary, not merely somewhere in the packet.
+
+RCS REPORT RUN SHEET VS SEPARATE ABSTRACTOR SHEET
+- canonicalRecord.titleSummary is the opening RCS TITLE REPORT / EXCEPTIONS SUMMARY. For RCS report formats it is also the applicable report run sheet for Vera Question 20; it commonly begins with the title report and ends at the literal 'END OF EXCEPTIONS'.
+- canonicalRecord.distinctRunSheet is ONLY a separately identifiable Run Sheet or Abstractor Sheet supplied in addition to the title report.
+- Never merge the two document types. If a distinct Abstractor Sheet exists, reconcile it separately. If it does not, the server may use titleSummary as the applicable RCS report run sheet for Question 20.
 
 RCS CURRENT OWNER SEARCH
 When PROFILE is RCS Current Owner:
