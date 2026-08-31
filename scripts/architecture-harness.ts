@@ -160,10 +160,21 @@ function testMultipleMortgagesRequireTargetSelection() {
 
 function testLienPositionNeverInferred() {
   const raw = extraction();
+  raw.header.searchType = fact("Foreclosure", [anchor("Search Type: Current Owner Search", 1, "Title Search Report")]);
   raw.targetLienHint.position = fact("Not Stated");
   const { record, qc } = build(raw);
   assert.equal(record.targetLien.position.value, "Needs review");
   assert.equal(qc.checks.find((check) => check.id === "TARGET_LIEN_POSITION_ESTABLISHED")?.status, "CANNOT_CONFIRM");
+}
+
+function testCurrentOwnerExcludesForeclosureChecks() {
+  const { qc } = build();
+  const ids = new Set(qc.checks.map((check) => check.id));
+  assert.equal(ids.has("TARGET_LIEN_FOUND"), false);
+  assert.equal(ids.has("TARGET_LIEN_POSITION_ESTABLISHED"), false);
+  assert.equal(ids.has("FEDERAL_TAX_LIEN_REVIEWED"), false);
+  assert.equal(ids.has("RELEASES_RECONCILED"), false);
+  assert.equal(ids.has("PLAT_REQUIREMENT_REVIEWED"), false);
 }
 
 function testRunSheetMismatch() {
@@ -188,7 +199,7 @@ function testUnknownProfileFailsClosed() {
   raw.header.searchType = fact("Not Stated");
   const { record, qc } = build(raw);
   assert.equal(record.orderType.value, "Needs review");
-  assert.equal(qc.profileId, "profile-unresolved-v1");
+  assert.equal(qc.profileId, "profile-unresolved-v2");
 }
 
 function testExportBlocksUnknownRequiredFields() {
@@ -218,6 +229,7 @@ const tests: Array<[string, () => void]> = [
   ["borrower fails closed", testBorrowerFailsClosed],
   ["multiple mortgages require target selection", testMultipleMortgagesRequireTargetSelection],
   ["lien position never inferred", testLienPositionNeverInferred],
+  ["current owner excludes foreclosure-only checks", testCurrentOwnerExcludesForeclosureChecks],
   ["bidirectional Run Sheet mismatch detection", testRunSheetMismatch],
   ["missing referenced source cannot confirm", testMissingReferencedInstrumentCannotConfirm],
   ["unknown QC profile fails closed", testUnknownProfileFailsClosed],
