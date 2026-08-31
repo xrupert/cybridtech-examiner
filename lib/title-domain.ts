@@ -91,6 +91,9 @@ export interface CanonicalTitleRecord {
   legalDescription: EvidenceValue;
   borrower: EvidenceValue;
   currentOwner: EvidenceValue;
+  /** Opening title-report/title-search summary used for report-to-source reconciliation. */
+  titleSummary: RunSheetSummary;
+  /** A distinct supplied Run Sheet or Abstractor Sheet only. A title report is never promoted to this field. */
   runSheet: RunSheetSummary;
   instruments: CanonicalInstrument[];
   mortgages: CanonicalInstrument[];
