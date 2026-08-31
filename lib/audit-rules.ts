@@ -1,4 +1,4 @@
-export const AUDIT_RULE_VERSION = "CYBRID-VERA3-RCS-QRC-LDP-NCALA-DEMO-2026-08-30";
+export const AUDIT_RULE_VERSION = "CYBRID-VERA3-RCS-QRC-LDP-MCCALLA-FIRST-IN-TIME-2026-08-31";
 
 export const SEARCH_TYPES = [
   "Foreclosure",
@@ -86,6 +86,8 @@ export const AUDIT_DOCTRINE = {
   legalDescription: "Apply the loaded Legal Description Compliance Protocol to Q8: parse all THENCE calls, preserve bearings/distances/symbols, compare referenced source instruments line-by-line and word-for-word when an instrument number is cited, verify call sequence and logical closure, fail material omissions/alterations, and use CANNOT_CONFIRM when a required referenced source cannot be inspected.",
   plat: "A plat is not automatically required. Apply the selected RCS order-type rule and any authoritative state mandate that has actually been loaded; never invent a mandate.",
   stateLaw: "If a checklist item requires state-law confirmation and no authoritative state rule has been loaded for that issue, do not fabricate one. Mark the state-law dependency for manual verification rather than converting it to an unsupported PASS or FAIL.",
+  firstInTime: "Develop lien position from the open encumbrance stack using reliable recording chronology as the baseline. Do not silently treat chronology as final legal priority when federal tax, mechanics/construction, HOA/association, UCC, same-day sequence ambiguity, or another governing priority exception may alter the result.",
+  foreclosureProjection: "Order-type QC requirements and foreclosure analysis are separate. Do not create false order defects, but develop lien amount, lien stack, position, senior/junior interests, and cure/action requirements needed for the McCalla export whenever packet evidence permits.",
   overall: "Overall Pass requires every applicable critical question to pass. Any critical Fail or Cannot Confirm yields overall Fail.",
 } as const;
 
@@ -130,12 +132,14 @@ export const AUTHORITATIVE_RULE_PACKS = [
   ...RCS_ORDER_REQUIREMENTS.Foreclosure.map((rule) => `RCS Foreclosure: ${rule}`),
   ...RCS_ORDER_REQUIREMENTS["2nd Lien"].map((rule) => `RCS 2nd Lien: ${rule}`),
   ...RCS_ORDER_REQUIREMENTS["Current Owner Search"].map((rule) => `RCS Current Owner Search: ${rule}`),
-  ...RCS_ORDER_REQUIREMENTS["Two Owner Search"].map((rule) => `Ncala/Two Owner demo profile: ${rule}`),
+  ...RCS_ORDER_REQUIREMENTS["Two Owner Search"].map((rule) => `Two Owner profile: ${rule}`),
   "Recovered Title Report Auditor no-assumption/evidence instructions supplied by owner.",
   "Title Report Forensic Audit – Quick Reference Checklist supplied by owner on 2026-08-28.",
   ...QUICK_REFERENCE_RULES.map((rule) => `Quick Reference: ${rule}`),
   "Title Report Legal Description Compliance Protocol supplied by owner on 2026-08-28.",
   ...LEGAL_DESCRIPTION_PROTOCOL.map((rule) => `Legal Description Protocol: ${rule}`),
+  `McCalla foreclosure projection: ${AUDIT_DOCTRINE.firstInTime}`,
+  `McCalla foreclosure projection: ${AUDIT_DOCTRINE.foreclosureProjection}`,
 ] as const;
 
 export function isSupportedSearchType(value: string): value is SupportedSearchType {

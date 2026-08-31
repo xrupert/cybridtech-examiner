@@ -64,6 +64,10 @@ export async function GET() {
       canonicalTitleRecord: true,
       versionedQcProfiles: true,
       semanticCheckerReadsLedgerNotPdf: true,
+      lienStackDevelopment: true,
+      lienPriorityMethod: "first-in-time recording chronology with exception gates",
+      foreclosureAnalysisForEveryOrder: true,
+      mccallaExportRequiresLienAmountAndPosition: true,
       curativeProjection: true,
       configurableClientExports: true,
       tenantScopedMatterHistory: true,
@@ -72,7 +76,7 @@ export async function GET() {
     },
     supportedSearchTypes: [AUTO_DETECT_SEARCH_TYPE, ...SEARCH_TYPES],
     stateSelection: "auto-detect from packet; API supports explicit examiner override",
-    unknownPolicy: "fail closed to Needs review / Cannot Confirm; no owner-to-borrower, lien-position, target-lien, or profile inference",
+    unknownPolicy: "fail closed to Needs review / Cannot Confirm; never substitute owner for borrower; develop lien position from reliable first-in-time recording evidence but downgrade when recording sequence or statutory priority exceptions make legal priority uncertain",
   });
 }
 
@@ -89,7 +93,7 @@ export async function POST(request: NextRequest) {
     let file: File;
     let state = AUTO_DETECT_STATE;
     let searchType = AUTO_DETECT_SEARCH_TYPE;
-    let clientName = "Ncala";
+    let clientName = "McCalla";
 
     if (contentType.includes("multipart/form-data")) {
       const form = await request.formData();
@@ -99,7 +103,7 @@ export async function POST(request: NextRequest) {
       file = files[0];
       state = String(form.get("state") || AUTO_DETECT_STATE);
       searchType = String(form.get("searchType") || AUTO_DETECT_SEARCH_TYPE);
-      clientName = String(form.get("clientName") || "Ncala");
+      clientName = String(form.get("clientName") || "McCalla");
     } else if (contentType.includes("application/json")) {
       const body = await request.json() as { blobPathnames?: string[]; state?: string; searchType?: string; clientName?: string };
       if (!body.blobPathnames?.length) return NextResponse.json({ code: "NO_FILE", error: "Provide one private title-report upload pathname." }, { status: 400 });
@@ -109,7 +113,7 @@ export async function POST(request: NextRequest) {
       file = files[0];
       state = body.state || AUTO_DETECT_STATE;
       searchType = body.searchType || AUTO_DETECT_SEARCH_TYPE;
-      clientName = body.clientName || "Ncala";
+      clientName = body.clientName || "McCalla";
     } else {
       return NextResponse.json({ code: "UNSUPPORTED_REQUEST", error: "Upload one PDF packet using multipart/form-data or the private Blob path." }, { status: 415 });
     }

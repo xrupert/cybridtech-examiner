@@ -121,10 +121,17 @@ function profileCheck(
       if (!record.targetLien.instrumentId) return result(check, "CANNOT_CONFIRM", "No foreclosure target lien was established from the packet.");
       return result(check, "PASS", `Target lien established as ${record.targetLien.instrumentNumber.value}.`, record.targetLien.instrumentNumber.evidence, record.targetLien.instrumentNumber.evidenceIds);
 
-    case "TARGET_LIEN_POSITION_ESTABLISHED":
-      return record.targetLien.position.state === "CONFIRMED"
-        ? result(check, "PASS", `Target lien position is expressly stated as ${record.targetLien.position.value}.`, record.targetLien.position.evidence, record.targetLien.position.evidenceIds)
-        : result(check, "CANNOT_CONFIRM", "Target lien position is not expressly established; Cybrid Title does not infer priority from document order.", record.targetLien.position.evidence, record.targetLien.position.evidenceIds);
+    case "TARGET_LIEN_POSITION_ESTABLISHED": {
+      if (record.targetLien.position.state === "CONFIRMED") {
+        const summary = record.targetLien.positionBasis === "EXPLICIT"
+          ? `Target lien position is expressly stated as ${record.targetLien.position.value}.`
+          : `Target lien position developed as ${record.targetLien.position.value} using first-in-time recording chronology with no detected priority exception requiring downgrade.`;
+        return result(check, "PASS", summary, record.targetLien.position.evidence, record.targetLien.position.evidenceIds);
+      }
+      return result(check, "CANNOT_CONFIRM", record.targetLien.positionBasis === "FIRST_IN_TIME"
+        ? `A first-in-time screening position was developed as ${record.targetLien.position.value}, but priority confidence is ${record.targetLien.positionConfidence}; examiner/jurisdiction-specific priority review is required.`
+        : "Target lien position could not be established from express priority evidence or reliable first-in-time recording chronology.", record.targetLien.position.evidence, record.targetLien.position.evidenceIds);
+    }
 
     case "RECORDED_DOCUMENTS_RECONCILE": {
       const reconciliation = titleSummaryReconciliation;
