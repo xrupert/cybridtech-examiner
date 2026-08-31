@@ -7,6 +7,7 @@ import { resolveSemanticChecks } from "./openai-title-checker";
 import { reconcileRunSheet, reconcileTitleSummary, type RunSheetReconciliation } from "./run-sheet-reconciler";
 import { createPipelineState, advancePipeline, assertCanonicalPipeline, type PipelineState } from "./pipeline";
 import { recordCanonicalReview } from "./canonical-review-history";
+import { reduceQcChecks } from "./title-qc-engine";
 import type { TitleReviewResult } from "./title-domain";
 import type { TitleEvidenceLedger } from "./title-extraction-model";
 
@@ -72,10 +73,22 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
   const qc = applyCheckerResolutions(initialQc, checker.resolutions, (ids) => ledgerEvidenceByIds(extracted.ledger, ids));
   pipeline = advancePipeline(pipeline, "CHECK", `${qc.checks.length} profile checks; ${checker.resolutions.length} semantic resolutions`);
 
-  const conclusiveWithoutEvidence = qc.checks.filter((check) => (check.status === "PASS" || check.status === "FAIL") && !check.evidence.length);
-  const groundedQc = conclusiveWithoutEvidence.length
-    ? applyCheckerResolutions(qc, conclusiveWithoutEvidence.map((check) => ({ checkId: check.id, status: "CANNOT_CONFIRM", summary: `Cannot Confirm — conclusive result lacked grounded evidence: ${check.summary}`, evidenceIds: [] })), () => [])
-    : qc;
+  // Final grounding is server-owned and applies even to deterministic PASS/FAIL results.
+  // An earlier implementation attempted to demote them through applyCheckerResolutions,
+  // which intentionally updates only CANNOT_CONFIRM checks and therefore could not demote
+  // an already-conclusive result. Reduce the checks directly instead.
+  const groundedChecks = qc.checks.map((check) => {
+    if ((check.status === "PASS" || check.status === "FAIL") && !check.evidence.length) {
+      return {
+        ...check,
+        status: "CANNOT_CONFIRM" as const,
+        summary: `Cannot Confirm — conclusive result lacked grounded source evidence: ${check.summary}`,
+        recommendedAction: check.recommendedAction === "No curative action required for this check." ? "Review the source evidence required to support this check." : check.recommendedAction,
+      };
+    }
+    return check;
+  });
+  const groundedQc = reduceQcChecks(qc, groundedChecks);
   pipeline = advancePipeline(pipeline, "GROUND", `${groundedQc.checks.filter((check) => check.evidence.length).length}/${groundedQc.checks.length} checks carry source evidence; unsupported conclusions fail closed`);
 
   let review: TitleReviewResult = {
@@ -98,7 +111,7 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     checkModel: checker.model,
   });
   pipeline = advancePipeline(pipeline, "RECORD", `Review receipt persisted/assigned as ${review.record.reviewId}`);
-  pipeline = advancePipeline(pipeline, "COMPLETE", `Foreclosure readiness=${review.qc.foreclosureReadiness}`);
+  pipeline = advancePipeline(pipeline, "COMPLETE", `Review readiness=${review.qc.foreclosureReadiness}`);
   assertCanonicalPipeline(pipeline);
 
   const diagnostics: CanonicalReviewDiagnostics = {
@@ -133,7 +146,7 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     distinctRunSheetDetected: record.runSheet.detected,
     titleSummaryMismatches: titleSummaryReconciliation.mismatched,
     qcStatus: review.qc.qcStatus,
-    foreclosureReadiness: review.qc.foreclosureReadiness,
+    reviewReadiness: review.qc.foreclosureReadiness,
     curativeIssues: review.qc.curativeIssues.length,
   }));
 
