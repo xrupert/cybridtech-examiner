@@ -1,4 +1,4 @@
-import type { CanonicalInstrument, CanonicalReference, CanonicalRunSheetEntry, CanonicalTitleRecord } from "./title-domain";
+import type { CanonicalInstrument, CanonicalReference, CanonicalRunSheetEntry, CanonicalTitleRecord, RunSheetSummary } from "./title-domain";
 import type { EvidenceRef } from "./vera";
 
 export interface FieldMismatch {
@@ -137,7 +137,7 @@ function mismatch(entry: CanonicalRunSheetEntry, source: CanonicalInstrument): F
   return out;
 }
 
-function expectedOnRunSheet(instrument: CanonicalInstrument): boolean {
+function expectedOnSummary(instrument: CanonicalInstrument): boolean {
   return /deed|mortgage|deed of trust|security deed|assignment|release|satisfaction|reconveyance|judgment|lien|trustee|foreclosure/i.test(instrument.type)
     && !/assessor|tax bill|pacer|bankrupt/i.test(instrument.type);
 }
@@ -148,8 +148,8 @@ function referenceFound(reference: CanonicalReference, sources: CanonicalInstrum
   return sources.some((source) => typeCompatible(reference.documentType, source.type) && normalizeText(reference.description).split(" ").filter((token) => token.length > 3).some((token) => normalizeText(source.type).includes(token)));
 }
 
-export function reconcileRunSheet(record: CanonicalTitleRecord): RunSheetReconciliation {
-  if (!record.runSheet.detected) {
+function reconcileSummary(record: CanonicalTitleRecord, summarySource: RunSheetSummary, label: "Title summary" | "Run Sheet"): RunSheetReconciliation {
+  if (!summarySource.detected) {
     return {
       runSheetDetected: false,
       matched: 0,
@@ -158,11 +158,13 @@ export function reconcileRunSheet(record: CanonicalTitleRecord): RunSheetReconci
       sourceOmittedFromRunSheet: [],
       referencedButMissing: [],
       entries: [],
-      summary: "Functional Run Sheet/title summary was not confidently segmented; reconciliation cannot be completed.",
+      summary: label === "Run Sheet"
+        ? "No distinct Run Sheet or Abstractor Sheet was supplied; Run Sheet reconciliation is not applicable."
+        : "Opening title summary was not confidently segmented; title-report-to-source reconciliation cannot be completed.",
     };
   }
 
-  const entries = record.runSheet.entries.map((entry): ReconciledEntry => {
+  const entries = summarySource.entries.map((entry): ReconciledEntry => {
     const source = findSource(entry, record.instruments);
     const evidence = [...entry.evidence, ...(source?.evidence || [])];
     const evidenceIds = [...new Set([...(entry.evidenceIds || []), ...(source?.evidenceIds || [])])];
@@ -172,7 +174,7 @@ export function reconcileRunSheet(record: CanonicalTitleRecord): RunSheetReconci
   });
 
   const matchedSourceIds = new Set(entries.map((entry) => entry.sourceInstrumentId).filter((id): id is string => Boolean(id)));
-  const sourceOmittedFromRunSheet = record.instruments.filter((instrument) => expectedOnRunSheet(instrument) && !matchedSourceIds.has(instrument.id));
+  const sourceOmittedFromRunSheet = record.instruments.filter((instrument) => expectedOnSummary(instrument) && !matchedSourceIds.has(instrument.id));
   const referencedButMissing = record.references.filter((reference) => !referenceFound(reference, record.instruments)).map((reference) => ({
     description: reference.description,
     instrumentNumber: reference.instrumentNumber,
@@ -183,7 +185,17 @@ export function reconcileRunSheet(record: CanonicalTitleRecord): RunSheetReconci
   const matched = entries.filter((entry) => entry.status === "MATCH").length;
   const mismatched = entries.filter((entry) => entry.status === "MISMATCH").length;
   const sourceMissing = entries.filter((entry) => entry.status === "SOURCE_MISSING").length;
-  const summary = `${entries.length} Run Sheet entr${entries.length === 1 ? "y" : "ies"}: ${matched} matched, ${mismatched} mismatched, ${sourceMissing} missing source; ${sourceOmittedFromRunSheet.length} material source instrument(s) omitted from summary; ${referencedButMissing.length} referenced source document(s) unavailable.`;
+  const summary = `${label}: ${entries.length} entr${entries.length === 1 ? "y" : "ies"}; ${matched} matched, ${mismatched} mismatched, ${sourceMissing} missing source; ${sourceOmittedFromRunSheet.length} material source instrument(s) omitted; ${referencedButMissing.length} referenced source document(s) unavailable.`;
 
   return { runSheetDetected: true, matched, mismatched, sourceMissing, sourceOmittedFromRunSheet, referencedButMissing, entries, summary };
+}
+
+/** Reconcile the actual title report/title-search summary to the supplied recorded sources. */
+export function reconcileTitleSummary(record: CanonicalTitleRecord): RunSheetReconciliation {
+  return reconcileSummary(record, record.titleSummary, "Title summary");
+}
+
+/** Reconcile only a distinct supplied Run Sheet/Abstractor Sheet. The title report never triggers this. */
+export function reconcileRunSheet(record: CanonicalTitleRecord): RunSheetReconciliation {
+  return reconcileSummary(record, record.runSheet, "Run Sheet");
 }
