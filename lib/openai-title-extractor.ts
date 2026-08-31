@@ -114,7 +114,7 @@ async function responseExtraction(args: { fileId?: string; text?: string; hints:
   if (args.fileId) content.push({ type: "input_file", file_id: args.fileId });
   const response = await openAIFetch(`${OPENAI_API}/responses`, {
     method: "POST", headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: args.model, store: false, max_output_tokens: MAX_OUTPUT_TOKENS, reasoning: { effort: "low" }, instructions: instructions(args.hints), input: [{ role: "user", content }], text: { verbosity: "low", format: { type: "json_schema", name: "cybrid_title_packet_extraction", strict: true, schema: extractionSchema } } }),
+    body: JSON.stringify({ model: args.model, store: false, max_output_tokens: MAX_OUTPUT_TOKENS, reasoning: { effort: "medium" }, instructions: instructions(args.hints), input: [{ role: "user", content }], text: { verbosity: "low", format: { type: "json_schema", name: "cybrid_title_packet_extraction", strict: true, schema: extractionSchema } } }),
   });
   const data = await response.json() as { output_text?: string; output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>; usage?: unknown };
   const output = extractOutputText(data);
@@ -126,6 +126,6 @@ export async function extractPdfTitlePacket(buffer: ArrayBuffer, sourceFile: str
   if (prepared.extractionMode === "native-text" && prepared.pageDelimitedText) { extractionMode = "native-text"; result = await responseExtraction({ text: prepared.pageDelimitedText, hints, model }); }
   else { extractionMode = "openai-pdf-vision"; const fileId = await uploadPdf(buffer, sourceFile); try { result = await responseExtraction({ fileId, hints, model }); } finally { await deleteFile(fileId); } }
   const ledger = buildEvidenceLedger({ packetHash: prepared.packetHash, sourceFile, pageCount: prepared.ledger.pageCount, extractionMode, extraction: result.raw, nativeLedger: prepared.ledger });
-  console.info("CYBRID_TITLE_EXTRACTION_MODEL_COMPLETE", JSON.stringify({ sourceFile, packetHash: prepared.packetHash, model, extractionMode, pageCount: prepared.ledger.pageCount, evidenceNodes: ledger.evidence.length, titleSummaryDetected: result.raw.runSheet.detected, modelMs: result.modelMs, usage: result.usage }));
+  console.info("CYBRID_TITLE_EXTRACTION_MODEL_COMPLETE", JSON.stringify({ sourceFile, packetHash: prepared.packetHash, model, reasoningEffort: "medium", extractionMode, pageCount: prepared.ledger.pageCount, evidenceNodes: ledger.evidence.length, titleSummaryDetected: result.raw.runSheet.detected, modelMs: result.modelMs, usage: result.usage }));
   return { extraction: result.raw, ledger, model, modelMs: result.modelMs };
 }
