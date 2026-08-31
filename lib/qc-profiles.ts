@@ -33,8 +33,10 @@ export interface QcProfile {
 }
 
 const CURRENT_OWNER: QcProfileCheck = { id: "CURRENT_OWNER_ESTABLISHED", label: "Current owner/vesting established", critical: true, category: "Ownership" };
-const PRIOR_OWNER: QcProfileCheck = { id: "PRIOR_OWNER_ESTABLISHED", label: "Prior qualifying non-family full-value conveyance established", critical: true, category: "Ownership" };
+const PRIOR_OWNER: QcProfileCheck = { id: "PRIOR_OWNER_ESTABLISHED", label: "Prior qualifying owner/deed established", critical: true, category: "Ownership" };
 const OWNERSHIP_CHAIN: QcProfileCheck = { id: "OWNERSHIP_CHAIN_COMPLETE", label: "Required ownership/conveyance chain is complete", critical: true, category: "Ownership" };
+const CURRENT_OWNER_FVD: QcProfileCheck = { id: "PRIOR_OWNER_ESTABLISHED", label: "Qualifying non-family full-value deed established with recording date, amount, and vesting", critical: true, category: "Current Owner Search" };
+const CURRENT_OWNER_PMM: QcProfileCheck = { id: "OWNERSHIP_CHAIN_COMPLETE", label: "Qualifying full-value deed has a concurrently filed institutional purchase-money mortgage", critical: true, category: "Current Owner Search" };
 const TARGET_LIEN: QcProfileCheck = { id: "TARGET_LIEN_FOUND", label: "Foreclosure target lien identified", critical: true, category: "Foreclosure Lien" };
 const TARGET_POSITION: QcProfileCheck = { id: "TARGET_LIEN_POSITION_ESTABLISHED", label: "Foreclosure target lien position established", critical: true, category: "Foreclosure Lien" };
 const DOCUMENTS: QcProfileCheck = { id: "RECORDED_DOCUMENTS_RECONCILE", label: "Required recorded documents are present and reconcile to the title summary", critical: true, category: "Recorded Documents", legacyQuestionNumber: 5 };
@@ -44,18 +46,14 @@ const LEGAL: QcProfileCheck = { id: "LEGAL_DESCRIPTION_RECONCILES", label: "Lega
 const FEDERAL_TAX: QcProfileCheck = { id: "FEDERAL_TAX_LIEN_REVIEWED", label: "Federal tax lien status reviewed", critical: true, category: "Lien", legacyQuestionNumber: 10 };
 const RELEASES: QcProfileCheck = { id: "RELEASES_RECONCILED", label: "Applicable releases/satisfactions reconcile", critical: true, category: "Release", legacyQuestionNumber: 11 };
 const PROPERTY: QcProfileCheck = { id: "PROPERTY_IDENTITY_RECONCILES", label: "Property identity reconciles across applicable evidence", critical: true, category: "Property", legacyQuestionNumber: 12 };
-const REPORT_ERRORS: QcProfileCheck = { id: "MATERIAL_REPORT_ERRORS_REVIEWED", label: "Material report errors reviewed", critical: true, category: "QC", legacyQuestionNumber: 17 };
+const REPORT_ERRORS: QcProfileCheck = { id: "MATERIAL_REPORT_ERRORS_REVIEWED", label: "Material title-report errors reviewed against source documents", critical: true, category: "QC", legacyQuestionNumber: 17 };
 const PLAT: QcProfileCheck = { id: "PLAT_REQUIREMENT_REVIEWED", label: "Referenced/required plat reviewed", critical: true, category: "Plat", legacyQuestionNumber: 18 };
-const RUN_SHEET: QcProfileCheck = { id: "RUN_SHEET_RECONCILES", label: "Functional Run Sheet/title summary reconciles bidirectionally to source documents", critical: true, category: "Run Sheet", legacyQuestionNumber: 20 };
+const RUN_SHEET: QcProfileCheck = { id: "RUN_SHEET_RECONCILES", label: "Distinct Run Sheet/Abstractor Sheet reconciles to source documents when supplied", critical: true, category: "Run Sheet", legacyQuestionNumber: 20 };
 
-// Profiles are intentionally explicit instead of inheriting one global checklist. RCS order
-// types have materially different copy/search requirements; a Current Owner Search must not
-// produce foreclosure-target, federal-lien, release, or plat exceptions merely because those
-// items are part of the Foreclosure workflow.
 const CURRENT_OWNER_CHECKS: QcProfileCheck[] = [
   CURRENT_OWNER,
-  PRIOR_OWNER,
-  OWNERSHIP_CHAIN,
+  CURRENT_OWNER_FVD,
+  CURRENT_OWNER_PMM,
   DOCUMENTS,
   RECORDING_ORDER,
   LEGAL,
@@ -105,23 +103,22 @@ const FORECLOSURE_CHECKS: QcProfileCheck[] = [
 ];
 
 function profile(id: string, name: string, orderType: string, checks: QcProfileCheck[]): QcProfile {
-  return { id, version: 2, name, orderType, checks };
+  return { id, version: 3, name, orderType, checks };
 }
 
 export const QC_PROFILES: QcProfile[] = [
-  profile("rcs-current-owner-v2", "RCS Current Owner", "Current Owner Search", CURRENT_OWNER_CHECKS),
-  profile("ncala-two-owner-v2", "Ncala Two Owner", "Two Owner Search", TWO_OWNER_CHECKS),
-  profile("rcs-second-lien-v2", "RCS 2nd Lien", "2nd Lien", SECOND_LIEN_CHECKS),
-  profile("rcs-foreclosure-v2", "RCS Foreclosure", "Foreclosure", FORECLOSURE_CHECKS),
+  profile("rcs-current-owner-v3", "RCS Current Owner", "Current Owner Search", CURRENT_OWNER_CHECKS),
+  profile("ncala-two-owner-v3", "Ncala Two Owner", "Two Owner Search", TWO_OWNER_CHECKS),
+  profile("rcs-second-lien-v3", "RCS 2nd Lien", "2nd Lien", SECOND_LIEN_CHECKS),
+  profile("rcs-foreclosure-v3", "RCS Foreclosure", "Foreclosure", FORECLOSURE_CHECKS),
 ];
 
 export const UNRESOLVED_QC_PROFILE: QcProfile = {
-  id: "profile-unresolved-v2",
-  version: 2,
+  id: "profile-unresolved-v3",
+  version: 3,
   name: "QC Profile Requires Examiner Selection",
   orderType: "Needs review",
   unresolved: true,
-  // Unknown order type fails closed to the broad review set until an examiner selects a profile.
   checks: FORECLOSURE_CHECKS,
 };
 
