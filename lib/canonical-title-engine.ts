@@ -4,13 +4,13 @@ import { initialCanonicalQc, applyCheckerResolutions } from "./canonical-qc-engi
 import { ledgerEvidenceByIds } from "./title-evidence-ledger";
 import { extractPdfTitlePacket } from "./openai-title-extractor";
 import { resolveSemanticChecks } from "./openai-title-checker";
-import { reconcileRunSheet, type RunSheetReconciliation } from "./run-sheet-reconciler";
+import { reconcileRunSheet, reconcileTitleSummary, type RunSheetReconciliation } from "./run-sheet-reconciler";
 import { createPipelineState, advancePipeline, assertCanonicalPipeline, type PipelineState } from "./pipeline";
 import { recordCanonicalReview } from "./canonical-review-history";
 import type { TitleReviewResult } from "./title-domain";
 import type { TitleEvidenceLedger } from "./title-extraction-model";
 
-export const CANONICAL_TITLE_ENGINE_VERSION = "cybrid-title-canonical-v2";
+export const CANONICAL_TITLE_ENGINE_VERSION = "cybrid-title-canonical-v3";
 
 export interface CanonicalReviewOptions {
   clientName?: string;
@@ -32,6 +32,7 @@ export interface CanonicalReviewDiagnostics {
   checkModelMs: number;
   evidenceNodes: number;
   nativeVerifiedEvidenceNodes: number;
+  titleSummaryReconciliation: RunSheetReconciliation;
   runSheetReconciliation: RunSheetReconciliation;
   pipeline: PipelineState;
 }
@@ -52,7 +53,6 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     requestedSearchType: options.requestedSearchType,
   });
   pipeline = advancePipeline(pipeline, "EXTRACT", `${extracted.ledger.evidence.length} evidence nodes extracted using ${extracted.ledger.extractionMode}`);
-  pipeline = advancePipeline(pipeline, "CLASSIFY", `Run Sheet detected=${extracted.extraction.runSheet.detected}; instruments=${extracted.extraction.instruments.length}; references=${extracted.extraction.references.length}`);
 
   const record = buildCanonicalTitleRecordFromExtraction({
     extraction: extracted.extraction,
@@ -61,17 +61,17 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     requestedState: options.requestedState,
     requestedSearchType: options.requestedSearchType,
   });
-  const reconciliation = reconcileRunSheet(record);
-  pipeline = advancePipeline(pipeline, "NORMALIZE", `${record.instruments.length} instruments normalized; ${record.runSheet.entries.length} Run Sheet entries normalized`);
+  pipeline = advancePipeline(pipeline, "CLASSIFY", `Title summary detected=${record.titleSummary.detected}; distinct Run Sheet detected=${record.runSheet.detected}; instruments=${record.instruments.length}; references=${record.references.length}`);
 
-  const initialQc = initialCanonicalQc(record, reconciliation);
+  const titleSummaryReconciliation = reconcileTitleSummary(record);
+  const runSheetReconciliation = reconcileRunSheet(record);
+  pipeline = advancePipeline(pipeline, "NORMALIZE", `${record.instruments.length} instruments normalized; ${record.titleSummary.entries.length} title-summary entries; ${record.runSheet.entries.length} distinct Run Sheet entries`);
+
+  const initialQc = initialCanonicalQc(record, titleSummaryReconciliation, runSheetReconciliation);
   const checker = await resolveSemanticChecks(record, initialQc, extracted.ledger);
   const qc = applyCheckerResolutions(initialQc, checker.resolutions, (ids) => ledgerEvidenceByIds(extracted.ledger, ids));
   pipeline = advancePipeline(pipeline, "CHECK", `${qc.checks.length} profile checks; ${checker.resolutions.length} semantic resolutions`);
 
-  // Grounding is a separate server-owned stage. Extraction evidence was assigned immutable
-  // ledger IDs; the checker is allowed to cite only those IDs, and conclusive checker
-  // results without valid/strong ledger evidence are already reduced to CANNOT_CONFIRM.
   const conclusiveWithoutEvidence = qc.checks.filter((check) => (check.status === "PASS" || check.status === "FAIL") && !check.evidence.length);
   const groundedQc = conclusiveWithoutEvidence.length
     ? applyCheckerResolutions(qc, conclusiveWithoutEvidence.map((check) => ({ checkId: check.id, status: "CANNOT_CONFIRM", summary: `Cannot Confirm — conclusive result lacked grounded evidence: ${check.summary}`, evidenceIds: [] })), () => [])
@@ -82,10 +82,7 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     engineVersion: CANONICAL_TITLE_ENGINE_VERSION,
     record,
     qc: groundedQc,
-    pipeline: {
-      stages: ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD"],
-      completedThrough: "RECORD",
-    },
+    pipeline: { stages: ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD"], completedThrough: "RECORD" },
   };
   pipeline = advancePipeline(pipeline, "RENDER", "Canonical review result prepared for workbench/export adapters");
 
@@ -118,7 +115,8 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     checkModelMs: checker.modelMs,
     evidenceNodes: extracted.ledger.evidence.length,
     nativeVerifiedEvidenceNodes: extracted.ledger.evidence.filter((node) => node.nativeVerified).length,
-    runSheetReconciliation: reconciliation,
+    titleSummaryReconciliation,
+    runSheetReconciliation,
     pipeline,
   };
 
@@ -131,6 +129,9 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     pageCount: prepared.ledger.pageCount,
     extractionMode: extracted.ledger.extractionMode,
     evidenceNodes: extracted.ledger.evidence.length,
+    titleSummaryDetected: record.titleSummary.detected,
+    distinctRunSheetDetected: record.runSheet.detected,
+    titleSummaryMismatches: titleSummaryReconciliation.mismatched,
     qcStatus: review.qc.qcStatus,
     foreclosureReadiness: review.qc.foreclosureReadiness,
     curativeIssues: review.qc.curativeIssues.length,
