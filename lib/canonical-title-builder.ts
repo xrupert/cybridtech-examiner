@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { evidenceRefsForAnchors } from "./title-evidence-ledger";
 import type { RawFact, RawInstrument, RawRunSheetEntry, RawTitlePacketExtraction, TitleEvidenceLedger } from "./title-extraction-model";
-import type { CanonicalInstrument, CanonicalReference, CanonicalRunSheetEntry, CanonicalTitleRecord, EvidenceState, EvidenceValue } from "./title-domain";
+import type { CanonicalInstrument, CanonicalReference, CanonicalRunSheetEntry, CanonicalTitleRecord, EvidenceState, EvidenceValue, RunSheetSummary } from "./title-domain";
 
 function clean(value: string): string {
   const text = String(value || "").trim();
@@ -17,13 +17,7 @@ function fact(raw: RawFact, ledger: TitleEvidenceLedger, basis: string): Evidenc
     const strong = matchingNodes.some((node) => node && (node.nativeVerified || node.confidence >= 0.8));
     state = strong ? "CONFIRMED" : "UNCONFIRMED";
   }
-  return {
-    value: value || "Needs review",
-    state,
-    evidence: mapped.refs,
-    evidenceIds: mapped.ids,
-    basis,
-  };
+  return { value: value || "Needs review", state, evidence: mapped.refs, evidenceIds: mapped.ids, basis };
 }
 
 function instrument(raw: RawInstrument, ledger: TitleEvidenceLedger, index: number): CanonicalInstrument {
@@ -37,12 +31,7 @@ function instrument(raw: RawInstrument, ledger: TitleEvidenceLedger, index: numb
     recordingDate: clean(raw.recordingDate) || "Needs review",
     amount: clean(raw.amount) || "Needs review",
     status: clean(raw.status) || "Needs review",
-    parties: (raw.parties || []).filter((party) => clean(party.name)).map((party) => ({
-      name: clean(party.name),
-      role: clean(party.role) || "Party",
-      evidence: mapped.refs,
-      evidenceIds: mapped.ids,
-    })),
+    parties: (raw.parties || []).filter((party) => clean(party.name)).map((party) => ({ name: clean(party.name), role: clean(party.role) || "Party", evidence: mapped.refs, evidenceIds: mapped.ids })),
     propertyAddress: clean(raw.propertyAddress) || "Needs review",
     legalDescription: clean(raw.legalDescription) || "Needs review",
     referencedInstrumentNumbers: (raw.referencedInstrumentNumbers || []).map(clean).filter(Boolean),
@@ -52,10 +41,10 @@ function instrument(raw: RawInstrument, ledger: TitleEvidenceLedger, index: numb
   };
 }
 
-function runSheetEntry(raw: RawRunSheetEntry, ledger: TitleEvidenceLedger, index: number): CanonicalRunSheetEntry {
+function summaryEntry(raw: RawRunSheetEntry, ledger: TitleEvidenceLedger, index: number, prefix: string): CanonicalRunSheetEntry {
   const mapped = evidenceRefsForAnchors(ledger, raw.evidence || []);
   return {
-    id: `rs-${index + 1}-${clean(raw.instrumentNumber) || "unresolved"}`,
+    id: `${prefix}-${index + 1}-${clean(raw.instrumentNumber) || "unresolved"}`,
     category: clean(raw.category) || "Unclassified",
     instrumentType: clean(raw.instrumentType) || "Unclassified",
     instrumentNumber: clean(raw.instrumentNumber) || "Needs review",
@@ -117,6 +106,19 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
   };
 }
 
+function emptyDistinctRunSheet(): RunSheetSummary {
+  return {
+    detected: false,
+    confidence: "low",
+    pageStart: null,
+    pageEnd: null,
+    basis: "No distinct Run Sheet or Abstractor Sheet was identified. The title report itself is not treated as a Run Sheet.",
+    entries: [],
+    evidence: [],
+    evidenceIds: [],
+  };
+}
+
 export function buildCanonicalTitleRecordFromExtraction(args: {
   extraction: RawTitlePacketExtraction;
   ledger: TitleEvidenceLedger;
@@ -128,8 +130,26 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
 }): CanonicalTitleRecord {
   const { extraction: raw, ledger } = args;
   const instruments = (raw.instruments || []).map((item, index) => instrument(item, ledger, index));
-  const runMapped = evidenceRefsForAnchors(ledger, raw.runSheet.evidence || []);
-  const explicitRunSheetLabel = runMapped.refs.some((item) => /run sheet|abstractor/i.test(`${item.documentType} ${item.quote}`));
+  const summaryMapped = evidenceRefsForAnchors(ledger, raw.runSheet.evidence || []);
+  const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\b(run sheet|abstractor sheet|abstractor)\b/i.test(`${item.documentType} ${item.quote}`));
+  const summaryEntries = (raw.runSheet.entries || []).map((item, index) => summaryEntry(item, ledger, index, "summary"));
+  const titleSummary: RunSheetSummary = {
+    detected: Boolean(raw.runSheet.detected),
+    confidence: raw.runSheet.detected ? "high" : "low",
+    pageStart: raw.runSheet.detected && raw.runSheet.pageStart > 0 ? raw.runSheet.pageStart : null,
+    pageEnd: raw.runSheet.detected && raw.runSheet.pageEnd > 0 ? raw.runSheet.pageEnd : null,
+    basis: clean(raw.runSheet.basis) || "Opening title-summary segmentation not established",
+    entries: summaryEntries,
+    evidence: summaryMapped.refs,
+    evidenceIds: summaryMapped.ids,
+  };
+  const runSheet: RunSheetSummary = explicitRunSheetLabel ? {
+    ...titleSummary,
+    confidence: "high",
+    entries: (raw.runSheet.entries || []).map((item, index) => summaryEntry(item, ledger, index, "runsheet")),
+    basis: `Distinct Run Sheet/Abstractor Sheet identified. ${titleSummary.basis}`,
+  } : emptyDistinctRunSheet();
+
   const orderTypeRaw = fact(raw.header.searchType, ledger, "Order/search type extracted from title packet");
   const stateRaw = fact(raw.header.state, ledger, "State extracted from title packet");
   const requestedSearchType = clean(args.requestedSearchType || "");
@@ -159,16 +179,8 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
     legalDescription: fact(raw.header.legalDescription, ledger, "Title-summary legal description extracted from packet"),
     borrower: fact(raw.header.borrower, ledger, "Borrower/mortgagor expressly identified in packet"),
     currentOwner: fact(raw.header.currentOwner, ledger, "Current owner/vesting expressly identified in packet"),
-    runSheet: {
-      detected: Boolean(raw.runSheet.detected),
-      confidence: raw.runSheet.detected ? (explicitRunSheetLabel ? "high" : "medium") : "low",
-      pageStart: raw.runSheet.detected && raw.runSheet.pageStart > 0 ? raw.runSheet.pageStart : null,
-      pageEnd: raw.runSheet.detected && raw.runSheet.pageEnd > 0 ? raw.runSheet.pageEnd : null,
-      basis: clean(raw.runSheet.basis) || "Functional Run Sheet/title summary segmentation not established",
-      entries: (raw.runSheet.entries || []).map((item, index) => runSheetEntry(item, ledger, index)),
-      evidence: runMapped.refs,
-      evidenceIds: runMapped.ids,
-    },
+    titleSummary,
+    runSheet,
     instruments,
     mortgages: instruments.filter((item) => typeIs(item.type, /mortgage|deed of trust|security deed/)),
     deeds: instruments.filter((item) => typeIs(item.type, /deed/) && !typeIs(item.type, /deed of trust|security deed/)),
@@ -200,7 +212,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   if (record.borrower.state !== "CONFIRMED") record.dataQualityWarnings.push("Borrower is unresolved. Current owner is never substituted for borrower.");
   if (record.orderType.state !== "CONFIRMED") record.dataQualityWarnings.push("Order/QC profile was not established from packet evidence; an examiner profile selection is required.");
   if (record.state.state !== "CONFIRMED") record.dataQualityWarnings.push("State was not established from packet evidence.");
-  if (!record.runSheet.detected) record.dataQualityWarnings.push("Functional Run Sheet/title summary was not confidently segmented; Run Sheet reconciliation must remain unresolved rather than N/A.");
+  if (!record.titleSummary.detected) record.dataQualityWarnings.push("Opening title summary was not confidently segmented; report-to-source reconciliation remains unresolved.");
   if (/^foreclosure$/i.test(record.orderType.value)) {
     if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("Multiple mortgage/security liens exist and the foreclosure target was not expressly identified.");
     if (record.targetLien.position.state !== "CONFIRMED") record.dataQualityWarnings.push("Lien position is unresolved and is not inferred from document order.");
