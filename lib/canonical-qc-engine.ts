@@ -1,4 +1,4 @@
-import { profileForOrderType, type ProfileCheckId, type QcProfileCheck } from "./qc-profiles";
+import { profileForOrderType, type QcProfileCheck } from "./qc-profiles";
 import type { RunSheetReconciliation } from "./run-sheet-reconciler";
 import { issueMetadata, reduceQcChecks } from "./title-qc-engine";
 import type { CanonicalInstrument, CanonicalTitleRecord, QcCheckResult, QcProfileResult, QcStatus } from "./title-domain";
@@ -58,7 +58,32 @@ function normalizeAddress(value: string): string {
   return value.toLowerCase().replace(/\b(street|st\.)\b/g, "st").replace(/\b(road|rd\.)\b/g, "rd").replace(/\b(avenue|ave\.)\b/g, "ave").replace(/[^a-z0-9]/g, "");
 }
 
-function profileCheck(check: QcProfileCheck, record: CanonicalTitleRecord, reconciliation: RunSheetReconciliation): QcCheckResult {
+function currentOwnerSearch(record: CanonicalTitleRecord): boolean {
+  return /^current owner search$/i.test(record.orderType.value.trim());
+}
+
+function currentOwnerEvidence(record: CanonicalTitleRecord): { refs: EvidenceRef[]; ids: string[] } {
+  const candidates = [
+    ...record.titleSummary.evidence,
+    ...record.deeds.flatMap((item) => item.evidence),
+    ...record.mortgages.flatMap((item) => item.evidence),
+    ...record.instruments.filter((item) => /assessor|sale|transfer|tax/i.test(item.type)).flatMap((item) => item.evidence),
+  ];
+  const ids = [
+    ...(record.titleSummary.evidenceIds || []),
+    ...record.deeds.flatMap((item) => item.evidenceIds || []),
+    ...record.mortgages.flatMap((item) => item.evidenceIds || []),
+    ...record.instruments.filter((item) => /assessor|sale|transfer|tax/i.test(item.type)).flatMap((item) => item.evidenceIds || []),
+  ];
+  return { refs: candidates, ids: [...new Set(ids)] };
+}
+
+function profileCheck(
+  check: QcProfileCheck,
+  record: CanonicalTitleRecord,
+  titleSummaryReconciliation: RunSheetReconciliation,
+  runSheetReconciliation: RunSheetReconciliation,
+): QcCheckResult {
   switch (check.id) {
     case "CURRENT_OWNER_ESTABLISHED":
       return record.currentOwner.state === "CONFIRMED"
@@ -66,13 +91,23 @@ function profileCheck(check: QcProfileCheck, record: CanonicalTitleRecord, recon
         : result(check, "CANNOT_CONFIRM", "Current owner/vesting is not supported by sufficiently grounded deed evidence.", record.currentOwner.evidence, record.currentOwner.evidenceIds);
 
     case "PRIOR_OWNER_ESTABLISHED": {
+      if (currentOwnerSearch(record)) {
+        const evidence = currentOwnerEvidence(record);
+        if (!record.deeds.length) return result(check, "CANNOT_CONFIRM", "RCS Current Owner requires a qualifying non-family full-value deed; no deed source was normalized.", evidence.refs, evidence.ids);
+        return result(check, "CANNOT_CONFIRM", "A deed source is present. Confirm that the controlling/current-owner deed is the qualifying non-family full-value transfer and that its recording date, transfer amount, and vesting are supported by packet evidence.", evidence.refs, evidence.ids);
+      }
       const prior = record.deeds.length >= 2;
       const evidence = record.deeds.flatMap((deed) => deed.evidence);
       const ids = record.deeds.flatMap((deed) => deed.evidenceIds || []);
-      return prior ? result(check, "PASS", `${record.deeds.length} deed instruments support the required two-owner review.`, evidence, ids) : result(check, "CANNOT_CONFIRM", "A second qualifying owner/deed was not established from the supplied source instruments.", evidence, ids);
+      return prior ? result(check, "PASS", `${record.deeds.length} deed instruments support the required multi-owner review.`, evidence, ids) : result(check, "CANNOT_CONFIRM", "A second qualifying owner/deed was not established from the supplied source instruments.", evidence, ids);
     }
 
     case "OWNERSHIP_CHAIN_COMPLETE": {
+      if (currentOwnerSearch(record)) {
+        const evidence = currentOwnerEvidence(record);
+        if (!record.deeds.length || !record.mortgages.length) return result(check, "CANNOT_CONFIRM", "RCS Current Owner requires the qualifying non-family full-value deed to have a concurrently filed institutional purchase-money mortgage; the supplied normalized deed/mortgage evidence is incomplete.", evidence.refs, evidence.ids);
+        return result(check, "CANNOT_CONFIRM", "Deed and mortgage evidence are present. Confirm that the qualifying full-value deed has a concurrently filed institutional purchase-money mortgage; do not require an extra deed when the current-owner deed itself satisfies the RCS look-back rule.", evidence.refs, evidence.ids);
+      }
       const continuous = chainLooksContinuous(record.deeds);
       const evidence = record.deeds.flatMap((deed) => deed.evidence);
       const ids = record.deeds.flatMap((deed) => deed.evidenceIds || []);
@@ -92,6 +127,7 @@ function profileCheck(check: QcProfileCheck, record: CanonicalTitleRecord, recon
         : result(check, "CANNOT_CONFIRM", "Target lien position is not expressly established; Cybrid Title does not infer priority from document order.", record.targetLien.position.evidence, record.targetLien.position.evidenceIds);
 
     case "RECORDED_DOCUMENTS_RECONCILE": {
+      const reconciliation = titleSummaryReconciliation;
       const evidence = reconciliation.entries.flatMap((entry) => entry.evidence).concat(reconciliation.sourceOmittedFromRunSheet.flatMap((item) => item.evidence), reconciliation.referencedButMissing.flatMap((item) => item.evidence));
       const ids = reconciliation.entries.flatMap((entry) => entry.evidenceIds).concat(reconciliation.sourceOmittedFromRunSheet.flatMap((item) => item.evidenceIds || []), reconciliation.referencedButMissing.flatMap((item) => item.evidenceIds));
       if (!reconciliation.runSheetDetected) return result(check, "CANNOT_CONFIRM", reconciliation.summary, evidence, ids);
@@ -101,7 +137,9 @@ function profileCheck(check: QcProfileCheck, record: CanonicalTitleRecord, recon
     }
 
     case "RECORDING_ORDER_RECONCILES":
-      return result(check, "CANNOT_CONFIRM", "Recording/chain order requires semantic review against the selected order profile and is intentionally not inferred from global PDF page order.", record.deeds.flatMap((item) => item.evidence), record.deeds.flatMap((item) => item.evidenceIds || []));
+      return result(check, "CANNOT_CONFIRM", currentOwnerSearch(record)
+        ? "Confirm the RCS Current Owner sequence: qualifying full-value deed and concurrent institutional purchase-money mortgage, then reconcile later recorded instruments by their actual recording dates."
+        : "Recording/chain order requires semantic review against the selected order profile and is intentionally not inferred from global PDF page order.", record.deeds.flatMap((item) => item.evidence).concat(record.mortgages.flatMap((item) => item.evidence)), record.deeds.flatMap((item) => item.evidenceIds || []).concat(record.mortgages.flatMap((item) => item.evidenceIds || [])));
 
     case "ASSIGNMENT_CHAIN_COMPLETE":
       return result(check, "CANNOT_CONFIRM", "Assignment/beneficiary continuity requires semantic review of the normalized mortgage and assignment parties.", [...record.mortgages, ...record.assignments].flatMap((item) => item.evidence), [...record.mortgages, ...record.assignments].flatMap((item) => item.evidenceIds || []));
@@ -137,19 +175,25 @@ function profileCheck(check: QcProfileCheck, record: CanonicalTitleRecord, recon
     }
 
     case "MATERIAL_REPORT_ERRORS_REVIEWED": {
+      const reconciliation = titleSummaryReconciliation;
       const mismatches = reconciliation.entries.flatMap((entry) => entry.mismatches);
-      if (mismatches.length) return result(check, "FAIL", `${mismatches.length} material Run Sheet/source field mismatch${mismatches.length === 1 ? "" : "es"} identified: ${mismatches.slice(0, 4).map((item) => `${item.field} (${item.runSheetValue} vs ${item.sourceValue})`).join("; ")}.`, reconciliation.entries.flatMap((entry) => entry.evidence), reconciliation.entries.flatMap((entry) => entry.evidenceIds));
-      if (reconciliation.runSheetDetected) return result(check, "PASS", "No deterministic Run Sheet/source field mismatch was identified.", reconciliation.entries.flatMap((entry) => entry.evidence), reconciliation.entries.flatMap((entry) => entry.evidenceIds));
-      return result(check, "CANNOT_CONFIRM", "Material report-error review cannot close until the functional Run Sheet/title summary is segmented.");
+      const evidence = reconciliation.entries.flatMap((entry) => entry.evidence).concat(reconciliation.sourceOmittedFromRunSheet.flatMap((item) => item.evidence), reconciliation.referencedButMissing.flatMap((item) => item.evidence));
+      const ids = reconciliation.entries.flatMap((entry) => entry.evidenceIds).concat(reconciliation.sourceOmittedFromRunSheet.flatMap((item) => item.evidenceIds || []), reconciliation.referencedButMissing.flatMap((item) => item.evidenceIds));
+      if (mismatches.length) return result(check, "FAIL", `${mismatches.length} material title-summary/source field mismatch${mismatches.length === 1 ? "" : "es"} identified: ${mismatches.slice(0, 4).map((item) => `${item.field} (${item.runSheetValue} vs ${item.sourceValue})`).join("; ")}.`, evidence, ids);
+      if (reconciliation.sourceOmittedFromRunSheet.length) return result(check, "FAIL", `${reconciliation.sourceOmittedFromRunSheet.length} material supplied source instrument(s) were omitted from the title summary.`, evidence, ids);
+      if (reconciliation.sourceMissing || reconciliation.referencedButMissing.length) return result(check, "CANNOT_CONFIRM", `Title-report error review cannot close because source support is incomplete. ${reconciliation.summary}`, evidence, ids);
+      if (reconciliation.runSheetDetected) return result(check, "PASS", "No deterministic title-summary/source field mismatch was identified.", evidence, ids);
+      return result(check, "CANNOT_CONFIRM", "Material title-report error review cannot close until the opening title summary is segmented.");
     }
 
     case "PLAT_REQUIREMENT_REVIEWED":
       return result(check, "CANNOT_CONFIRM", "Plat applicability requires semantic review of the legal description, references, and selected order profile.", record.flags.plat.evidence, record.flags.plat.evidenceIds);
 
     case "RUN_SHEET_RECONCILES": {
+      const reconciliation = runSheetReconciliation;
       const evidence = reconciliation.entries.flatMap((entry) => entry.evidence);
       const ids = reconciliation.entries.flatMap((entry) => entry.evidenceIds);
-      if (!reconciliation.runSheetDetected) return result(check, "CANNOT_CONFIRM", reconciliation.summary, evidence, ids);
+      if (!record.runSheet.detected) return result(check, "NOT_APPLICABLE", "Not applicable — no distinct Run Sheet or Abstractor Sheet was supplied. The title report itself is not a Run Sheet.");
       if (reconciliation.mismatched || reconciliation.sourceOmittedFromRunSheet.length) return result(check, "FAIL", reconciliation.summary, evidence, ids);
       if (reconciliation.sourceMissing || reconciliation.referencedButMissing.length) return result(check, "CANNOT_CONFIRM", reconciliation.summary, evidence, ids);
       return result(check, "PASS", reconciliation.summary, evidence, ids);
@@ -157,9 +201,9 @@ function profileCheck(check: QcProfileCheck, record: CanonicalTitleRecord, recon
   }
 }
 
-export function initialCanonicalQc(record: CanonicalTitleRecord, reconciliation: RunSheetReconciliation): QcProfileResult {
+export function initialCanonicalQc(record: CanonicalTitleRecord, titleSummaryReconciliation: RunSheetReconciliation, runSheetReconciliation: RunSheetReconciliation): QcProfileResult {
   const profile = profileForOrderType(record.orderType.value);
-  const checks = profile.checks.map((check) => profileCheck(check, record, reconciliation));
+  const checks = profile.checks.map((check) => profileCheck(check, record, titleSummaryReconciliation, runSheetReconciliation));
   return reduceQcChecks({ profileId: profile.id, profileVersion: profile.version, profileName: profile.name }, checks);
 }
 
