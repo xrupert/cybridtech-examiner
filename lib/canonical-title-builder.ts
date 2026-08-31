@@ -113,7 +113,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     amount: selected ? { value: selected.amount, state: selected.amount === "Needs review" ? "NOT_STATED" as const : selected.evidence.length ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: selected.evidence, evidenceIds: selected.evidenceIds, basis: "Amount from selected/provisional target lien instrument" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien not resolved" },
     beneficiary: selected && beneficiary ? { value: beneficiary.name, state: "CONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/provisional target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
     position,
-    selectionRequired: mortgages.length !== 1 && !selected,
+    selectionRequired: mortgages.length > 1 && !selected,
   };
 }
 
@@ -201,7 +201,9 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   if (record.orderType.state !== "CONFIRMED") record.dataQualityWarnings.push("Order/QC profile was not established from packet evidence; an examiner profile selection is required.");
   if (record.state.state !== "CONFIRMED") record.dataQualityWarnings.push("State was not established from packet evidence.");
   if (!record.runSheet.detected) record.dataQualityWarnings.push("Functional Run Sheet/title summary was not confidently segmented; Run Sheet reconciliation must remain unresolved rather than N/A.");
-  if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("Multiple mortgage/security liens exist and the foreclosure target was not expressly identified.");
-  if (record.targetLien.position.state !== "CONFIRMED") record.dataQualityWarnings.push("Lien position is unresolved and is not inferred from document order.");
+  if (/^foreclosure$/i.test(record.orderType.value)) {
+    if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("Multiple mortgage/security liens exist and the foreclosure target was not expressly identified.");
+    if (record.targetLien.position.state !== "CONFIRMED") record.dataQualityWarnings.push("Lien position is unresolved and is not inferred from document order.");
+  }
   return record;
 }
