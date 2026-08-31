@@ -21,6 +21,20 @@ export function issueMetadata(id: ProfileCheckId): { code: string; severity: Cur
   }
 }
 
+export function enforceGroundedConclusions(checks: QcCheckResult[]): QcCheckResult[] {
+  return checks.map((check) => {
+    if ((check.status === "PASS" || check.status === "FAIL") && !check.evidence.length) {
+      return {
+        ...check,
+        status: "CANNOT_CONFIRM" as const,
+        summary: `Cannot Confirm — conclusive result lacked grounded source evidence: ${check.summary}`,
+        recommendedAction: check.recommendedAction === "No curative action required for this check." ? "Review the source evidence required to support this check." : check.recommendedAction,
+      };
+    }
+    return check;
+  });
+}
+
 function curativeIssue(check: QcCheckResult): CurativeIssue | null {
   if (check.status === "PASS" || check.status === "NOT_APPLICABLE") return null;
   const meta = issueMetadata(check.id as ProfileCheckId);
