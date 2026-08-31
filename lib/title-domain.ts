@@ -4,6 +4,9 @@ export type EvidenceState = "CONFIRMED" | "UNCONFIRMED" | "NOT_STATED";
 export type QcStatus = "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE";
 export type ForeclosureReadiness = "CLEAR" | "QC_DEFICIENCY" | "CURATIVE_REQUIRED" | "CANNOT_CONFIRM";
 export type CurativeSeverity = "BLOCKING" | "REVIEW" | "QC" | "INFO";
+export type LienPriorityBasis = "EXPLICIT" | "FIRST_IN_TIME" | "UNRESOLVED";
+export type LienPriorityConfidence = "high" | "medium" | "low";
+export type ForeclosureRequirementType = "CURE" | "PRIORITY_REVIEW" | "PAYOFF_REVIEW" | "NOTICE_REVIEW" | "EVIDENCE";
 
 export interface EvidenceValue<T = string> {
   value: T;
@@ -73,6 +76,48 @@ export interface RunSheetSummary {
   evidenceIds?: string[];
 }
 
+export interface CanonicalLienStackEntry {
+  instrumentId: string;
+  instrumentType: string;
+  instrumentNumber: string;
+  amount: string;
+  recordingDate: string;
+  holder: string;
+  status: "OPEN" | "RELEASED" | "UNKNOWN";
+  chronologicalPosition: number | null;
+  positionLabel: string;
+  priorityBasis: LienPriorityBasis;
+  priorityConfidence: LienPriorityConfidence;
+  priorityWarning: string;
+  evidence: EvidenceRef[];
+  evidenceIds?: string[];
+}
+
+export interface ForeclosureRequirement {
+  code: string;
+  type: ForeclosureRequirementType;
+  severity: CurativeSeverity;
+  title: string;
+  action: string;
+  evidence: EvidenceRef[];
+  evidenceIds?: string[];
+}
+
+export interface ForeclosureAnalysis {
+  method: "FIRST_IN_TIME_WITH_EXCEPTION_GATES";
+  status: "READY" | "REVIEW" | "CURATIVE_REQUIRED";
+  targetInstrumentId: string | null;
+  targetAmount: string;
+  targetPosition: string;
+  targetPositionBasis: LienPriorityBasis;
+  targetPositionConfidence: LienPriorityConfidence;
+  seniorLienIds: string[];
+  juniorLienIds: string[];
+  openLienCount: number;
+  lienStack: CanonicalLienStackEntry[];
+  requirements: ForeclosureRequirement[];
+}
+
 export interface CanonicalTitleRecord {
   schemaVersion: 2;
   recordId: string;
@@ -123,8 +168,11 @@ export interface CanonicalTitleRecord {
     amount: EvidenceValue;
     beneficiary: EvidenceValue;
     position: EvidenceValue;
+    positionBasis: LienPriorityBasis;
+    positionConfidence: LienPriorityConfidence;
     selectionRequired: boolean;
   };
+  foreclosureAnalysis: ForeclosureAnalysis;
   dataQualityWarnings: string[];
   matterRevision: number;
 }
