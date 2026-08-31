@@ -51,6 +51,15 @@ function evidenceText(instrument: CanonicalInstrument): string {
   return (instrument.evidence || []).map((ref) => normalizeInstrumentNumber(ref.quote)).join(" ");
 }
 
+function rawEvidenceText(instrument: CanonicalInstrument): string {
+  return (instrument.evidence || []).map((ref) => ref.quote).join(" \n");
+}
+
+function hasJudgmentLienReleaseEvidence(instrument: CanonicalInstrument): boolean {
+  if (!/judgment/i.test(instrument.type)) return false;
+  return /\brelease of judgment lien\b|\bjudgment lien (?:was )?(?:released|satisfied|discharged)\b/i.test(rawEvidenceText(instrument));
+}
+
 function releaseMatchesInstrument(release: CanonicalInstrument, instrument: CanonicalInstrument): boolean {
   const target = normalizeInstrumentNumber(instrument.instrumentNumber);
   if (!target) return false;
@@ -72,7 +81,7 @@ function statusFromInstrument(
   releasedIds: Set<string>,
   titleSummaryOpenNumbers: Set<string>,
 ): "OPEN" | "RELEASED" | "UNKNOWN" {
-  if (releasedIds.has(instrument.id)) return "RELEASED";
+  if (releasedIds.has(instrument.id) || hasJudgmentLienReleaseEvidence(instrument)) return "RELEASED";
   if (/release|satisf|paid|closed|terminated|reconveyed|discharged|cancelled/i.test(instrument.status)) return "RELEASED";
   if (/open|active|unreleased|outstanding|unsatisfied|affect(?:s|ing)? title/i.test(instrument.status)) return "OPEN";
   const number = normalizeInstrumentNumber(instrument.instrumentNumber);
