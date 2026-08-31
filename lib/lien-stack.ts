@@ -173,7 +173,8 @@ export function developedPositionForTarget(
     };
   }
   if (!target || !target.chronologicalPosition) return { value: "Needs review", basis: "UNRESOLVED", confidence: "low", evidence: target?.evidence || [], evidenceIds: target?.evidenceIds || [], warning: target?.priorityWarning || "Target lien is not resolved in the open-lien stack." };
-  const throughTarget = stack.filter((entry) => entry.status !== "RELEASED" && entry.chronologicalPosition != null && entry.chronologicalPosition <= target.chronologicalPosition);
+  const targetPosition = target.chronologicalPosition;
+  const throughTarget = stack.filter((entry) => entry.status !== "RELEASED" && entry.chronologicalPosition != null && entry.chronologicalPosition <= targetPosition);
   const evidence = uniqueEvidence(throughTarget);
   return {
     value: target.positionLabel,
