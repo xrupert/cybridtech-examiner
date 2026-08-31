@@ -82,7 +82,7 @@ function makeScannedTruthPacket(): ArrayBuffer {
     ctx.fillText(line, 38, y);
     y += bold ? 42 : 35;
   }
-  const jpeg = canvas.toBuffer("image/jpeg", { quality: 0.82 });
+  const jpeg = canvas.toBuffer("image/jpeg", 82);
   return jpegPdf(jpeg, width, height);
 }
 
