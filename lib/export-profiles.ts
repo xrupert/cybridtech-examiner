@@ -3,7 +3,7 @@ import type { CanonicalTitleRecord, QcProfileResult } from "./title-domain";
 export type ExportPath =
   | "orderNumber" | "tsNumber" | "borrower" | "currentOwner" | "propertyAddress" | "state" | "county" | "parcelId" | "orderType" | "effectiveDate"
   | "targetLien.instrumentNumber" | "targetLien.amount" | "targetLien.beneficiary" | "targetLien.position" | "targetLien.positionBasis" | "targetLien.positionConfidence"
-  | "foreclosure.openLienCount" | "foreclosure.seniorLiens" | "foreclosure.juniorLiens" | "foreclosure.requirements" | "foreclosure.status"
+  | "foreclosure.openLienCount" | "foreclosure.seniorLiens" | "foreclosure.juniorLiens" | "foreclosure.requirements" | "foreclosure.status" | "foreclosure.jurisdictionCoverage"
   | "qc.qcStatus" | "qc.foreclosureReadiness" | "qc.curativeIssueCount" | "qc.curativeIssues" | "packetHash" | "reviewId" | "sourceFile";
 
 export interface ExportColumn { key: string; label: string; path: ExportPath; required?: boolean; }
@@ -26,7 +26,6 @@ export const MCCALLA_EXPORT_PROFILE: ExportProfile = {
   ],
 };
 
-// Backward-compatible export symbol while the UI/batch manifests migrate from the old demo name.
 export const NCALA_DEMO_EXPORT_PROFILE = MCCALLA_EXPORT_PROFILE;
 
 export const AVAILABLE_EXPORT_COLUMNS: ExportColumn[] = [
@@ -44,6 +43,7 @@ export const AVAILABLE_EXPORT_COLUMNS: ExportColumn[] = [
   { key: "open_lien_count", label: "Open Lien Count", path: "foreclosure.openLienCount" },
   { key: "junior_liens", label: "Junior Liens", path: "foreclosure.juniorLiens" },
   { key: "foreclosure_analysis_status", label: "Foreclosure Analysis Status", path: "foreclosure.status" },
+  { key: "jurisdiction_coverage", label: "Jurisdiction Rule Coverage", path: "foreclosure.jurisdictionCoverage" },
   { key: "curative_issue_count", label: "Curative Issue Count", path: "qc.curativeIssueCount" },
   { key: "curative_issues", label: "QC Curative Issues", path: "qc.curativeIssues" },
   { key: "source_file", label: "Source File", path: "sourceFile" },
@@ -59,9 +59,20 @@ function stackLabel(record: CanonicalTitleRecord, ids: string[]): string {
 }
 
 function combinedForeclosureRequirements(record: CanonicalTitleRecord, qc: QcProfileResult): string {
-  const developed = record.foreclosureAnalysis.requirements.map((item) => `${item.type}: ${item.title} ACTION: ${item.action}`);
+  const developed = record.foreclosureAnalysis.requirements.map((item) => {
+    const scope = item.scope ? ` [${item.scope.replaceAll("_", " ")}]` : "";
+    const authority = item.authority ? ` AUTHORITY: ${item.authority}` : "";
+    const jurisdiction = item.jurisdiction ? ` JURISDICTION: ${item.jurisdiction}` : "";
+    return `${item.type}${scope}: ${item.title} ACTION: ${item.action}${jurisdiction}${authority}`;
+  });
   const qcIssues = qc.curativeIssues.map((issue) => `QC/CURE: ${issue.title} ACTION: ${issue.recommendedAction}`);
   return [...developed, ...qcIssues].join(" | ");
+}
+
+function jurisdictionCoverage(record: CanonicalTitleRecord): string {
+  const coverage = record.foreclosureAnalysis.jurisdictionCoverage;
+  if (!coverage) return "Not loaded";
+  return `${coverage.status} · ${coverage.state} · ${coverage.county} · ${coverage.ruleSetVersion}: ${coverage.note}`;
 }
 
 function pathValue(context: ExportRowContext, path: ExportPath): string | number {
@@ -88,6 +99,7 @@ function pathValue(context: ExportRowContext, path: ExportPath): string | number
     case "foreclosure.juniorLiens": return stackLabel(record, record.foreclosureAnalysis.juniorLienIds);
     case "foreclosure.requirements": return combinedForeclosureRequirements(record, qc);
     case "foreclosure.status": return record.foreclosureAnalysis.status;
+    case "foreclosure.jurisdictionCoverage": return jurisdictionCoverage(record);
     case "qc.qcStatus": return qc.qcStatus;
     case "qc.foreclosureReadiness": return qc.foreclosureReadiness;
     case "qc.curativeIssueCount": return qc.curativeIssues.length;
