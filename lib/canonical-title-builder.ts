@@ -97,14 +97,16 @@ function summaryAmount(raw: RawTitlePacketExtraction, instrumentNumber: string, 
 
 function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacketExtraction, ledger: TitleEvidenceLedger, lienStack: CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"]) {
   const mortgages = recordInstruments.filter((item) => typeIs(item.type, /mortgage|deed of trust|security deed/));
-  const hint = fact(raw.targetLienHint.instrumentNumber, ledger, "Foreclosure target lien explicitly identified by the packet/order");
+  const activeMortgageIds = new Set(lienStack.filter((entry) => entry.status !== "RELEASED" && /mortgage|deed of trust|security deed/i.test(entry.instrumentType)).map((entry) => entry.instrumentId));
+  const activeMortgages = mortgages.filter((item) => activeMortgageIds.has(item.id));
+  const hint = fact(raw.targetLienHint.instrumentNumber, ledger, "Target lien explicitly identified by the packet/order");
   const explicitPosition = fact(raw.targetLienHint.position, ledger, "Lien position explicitly stated by the packet/order");
   let selected: CanonicalInstrument | undefined;
 
   if (hint.state !== "NOT_STATED") {
     selected = mortgages.find((item) => sameInstrument(item.instrumentNumber, hint.value));
   }
-  if (!selected && mortgages.length === 1) selected = mortgages[0];
+  if (!selected && activeMortgages.length === 1) selected = activeMortgages[0];
 
   const beneficiary = selected?.parties.find((party) => /beneficiary|holder|mortgagee|lender/i.test(party.role));
   const selectedEvidence: EvidenceValue = selected ? {
@@ -112,7 +114,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
-    basis: hint.state !== "NOT_STATED" ? "Matched explicit target-lien hint to normalized instrument" : "Only mortgage/security instrument normalized; used as the provisional target for lien-stack development",
+    basis: hint.state !== "NOT_STATED" ? "Matched explicit target-lien hint to normalized instrument" : "Only open/unknown mortgage or security instrument remains in the lien stack; used as the provisional target for McCalla foreclosure development",
   } : hint;
 
   const sourceAmount: EvidenceValue | null = selected && selected.amount !== "Needs review" ? {
@@ -120,9 +122,9 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
-    basis: "Lien amount from selected/provisional target security instrument",
+    basis: "Recorded lien amount from selected/provisional target security instrument",
   } : selected ? summaryAmount(raw, selected.instrumentNumber, ledger) : null;
-  const amount = sourceAmount || { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien amount not resolved" };
+  const amount = sourceAmount || { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target recorded lien amount not resolved" };
 
   const firstInTime = developedPositionForTarget(lienStack, selected?.id || null);
   const useExplicit = explicitPosition.state === "CONFIRMED";
@@ -144,7 +146,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     position,
     positionBasis: useExplicit ? "EXPLICIT" as const : firstInTime.basis,
     positionConfidence: useExplicit ? "high" as const : firstInTime.confidence,
-    selectionRequired: mortgages.length > 1 && !selected,
+    selectionRequired: activeMortgages.length > 1 && !selected,
   };
 }
 
@@ -272,7 +274,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   if (record.orderType.state !== "CONFIRMED") record.dataQualityWarnings.push("Order/QC profile was not established from packet evidence; an examiner profile selection is required.");
   if (record.state.state !== "CONFIRMED") record.dataQualityWarnings.push("State was not established from packet evidence.");
   if (!record.titleSummary.detected) record.dataQualityWarnings.push("Opening title summary was not confidently segmented; report-to-source reconciliation remains unresolved.");
-  if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("Multiple mortgage/security liens exist and the target lien was not expressly identified. Select the target before McCalla foreclosure export is final.");
+  if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("Multiple open/unknown mortgage or security liens exist and the target lien was not expressly identified. Select the target before McCalla foreclosure export is final.");
   if (record.targetLien.position.value === "Needs review") record.dataQualityWarnings.push("Lien position could not be developed from first-in-time recording evidence and requires examiner priority review.");
   if (record.targetLien.positionBasis === "FIRST_IN_TIME" && record.targetLien.positionConfidence !== "high") record.dataQualityWarnings.push("Lien position is a first-in-time screening result with a priority exception or sequencing uncertainty; jurisdiction-specific priority review is required.");
   return record;
