@@ -68,11 +68,29 @@ function testReleasedJudgmentLienLeavesOpenStack() {
   assert.equal(stack.find((entry) => entry.instrumentId === "dot-1")?.positionLabel, "1st Lien");
 }
 
+function testActiveJudgmentWithLienReleaseEvidenceIsReleased() {
+  const judgment = instrument({
+    id: "judgment-1",
+    type: "Judgment Lien",
+    instrumentNumber: "16-2-00578-7",
+    recordingDate: "2016-08-15",
+    amount: "$936.22",
+    status: "Active",
+    evidence: [{ quote: "03/01/2018 Release of Judgment Lien", page: 57, documentType: "Court Docket", source: "openai-file", instrumentNumber: "16-2-00578-7", confidence: 0.99 }],
+  });
+  const mortgage = instrument({ id: "dot-1", type: "Deed of Trust", instrumentNumber: "2014-04040027", recordingDate: "2014-04-04", amount: "$78,551.00", status: "Open" });
+  const stack = buildLienStack([mortgage, judgment], [], { titleSummaryOpenInstrumentNumbers: ["2014-04040027", "16-2-00578-7"] });
+  assert.equal(stack.find((entry) => entry.instrumentId === "judgment-1")?.status, "RELEASED", "A real-property judgment-lien release controls lien status even when the underlying judgment docket remains Active.");
+  assert.equal(stack.filter((entry) => entry.status === "OPEN").length, 1);
+  assert.equal(stack.find((entry) => entry.instrumentId === "dot-1")?.positionLabel, "1st Lien");
+}
+
 const tests: Array<[string, () => void]> = [
   ["derivative lien-chain documents are not lien identities", testDerivativeDocumentsDoNotBecomeLiens],
   ["first-position security lien auto-develops when title summary is complete", testFirstPositionSecurityLienAutoDevelops],
   ["unknown lien status is excluded from open count and can block priority", testUnknownLienIsNotCountedOpenAndCanBlockPriority],
   ["released judgment lien is excluded from open stack", testReleasedJudgmentLienLeavesOpenStack],
+  ["active judgment with lien-release evidence is treated as released for real-property priority", testActiveJudgmentWithLienReleaseEvidenceIsReleased],
 ];
 
 for (const [name, test] of tests) {
