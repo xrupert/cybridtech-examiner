@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { evidenceRefsForAnchors } from "./title-evidence-ledger";
-import { buildForeclosureAnalysis, buildLienStack, developedPositionForTarget } from "./lien-stack";
+import { automaticTargetSecurityLienId, buildForeclosureAnalysis, buildLienStack, developedPositionForTarget, isLienIdentityType, isSecurityLienIdentityType } from "./lien-stack";
 import type { RawFact, RawInstrument, RawRunSheetEntry, RawTitlePacketExtraction, TitleEvidenceLedger } from "./title-extraction-model";
 import type { CanonicalInstrument, CanonicalReference, CanonicalRunSheetEntry, CanonicalTitleRecord, EvidenceState, EvidenceValue, RunSheetSummary } from "./title-domain";
 
@@ -96,25 +96,39 @@ function summaryAmount(raw: RawTitlePacketExtraction, instrumentNumber: string, 
 }
 
 function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacketExtraction, ledger: TitleEvidenceLedger, lienStack: CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"]) {
-  const mortgages = recordInstruments.filter((item) => typeIs(item.type, /mortgage|deed of trust|security deed/));
-  const activeMortgageIds = new Set(lienStack.filter((entry) => entry.status !== "RELEASED" && /mortgage|deed of trust|security deed/i.test(entry.instrumentType)).map((entry) => entry.instrumentId));
-  const activeMortgages = mortgages.filter((item) => activeMortgageIds.has(item.id));
+  const mortgageIdentityIds = new Set(lienStack.filter((entry) => isSecurityLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentId));
+  const mortgages = recordInstruments.filter((item) => mortgageIdentityIds.has(item.id));
+  const mortgageEntries = lienStack.filter((entry) => mortgageIdentityIds.has(entry.instrumentId));
+  const openMortgageEntries = mortgageEntries.filter((entry) => entry.status === "OPEN");
+  const summaryMortgageNumbers = raw.runSheet.entries.filter((entry) => isSecurityLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentNumber);
   const hint = fact(raw.targetLienHint.instrumentNumber, ledger, "Target lien explicitly identified by the packet/order");
   const explicitPosition = fact(raw.targetLienHint.position, ledger, "Lien position explicitly stated by the packet/order");
   let selected: CanonicalInstrument | undefined;
+  let selectionBasis = "Target lien could not be developed automatically from the packet evidence";
 
   if (hint.state !== "NOT_STATED") {
     selected = mortgages.find((item) => sameInstrument(item.instrumentNumber, hint.value));
+    if (selected) selectionBasis = "Matched explicit target-lien hint to normalized security-lien identity";
   }
-  if (!selected && activeMortgages.length === 1) selected = activeMortgages[0];
 
+  if (!selected) {
+    const automaticId = automaticTargetSecurityLienId(lienStack, summaryMortgageNumbers);
+    selected = automaticId ? mortgages.find((item) => item.id === automaticId) : undefined;
+    if (selected) {
+      selectionBasis = openMortgageEntries.length === 1
+        ? "Only open mortgage/security lien identity remains; automatically used as the target"
+        : "Automatically selected the evidence-supported first-position open mortgage/security lien from the complete title-summary lien stack";
+    }
+  }
+
+  const selectedStackEntry = selected ? lienStack.find((entry) => entry.instrumentId === selected.id) : undefined;
   const beneficiary = selected?.parties.find((party) => /beneficiary|holder|mortgagee|lender/i.test(party.role));
   const selectedEvidence: EvidenceValue = selected ? {
     value: selected.instrumentNumber,
     state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
-    basis: hint.state !== "NOT_STATED" ? "Matched explicit target-lien hint to normalized instrument" : "Only open/unknown mortgage or security instrument remains in the lien stack; used as the provisional target for McCalla foreclosure development",
+    basis: selectionBasis,
   } : hint;
 
   const sourceAmount: EvidenceValue | null = selected && selected.amount !== "Needs review" ? {
@@ -122,7 +136,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
-    basis: "Recorded lien amount from selected/provisional target security instrument",
+    basis: "Recorded lien amount from selected/automatically developed target security instrument",
   } : selected ? summaryAmount(raw, selected.instrumentNumber, ledger) : null;
   const amount = sourceAmount || { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target recorded lien amount not resolved" };
 
@@ -138,15 +152,19 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
       : `Developed ${firstInTime.value} using first-in-time recording chronology${firstInTime.warning ? `; ${firstInTime.warning}` : ""}`,
   };
 
+  const unresolvedMortgageIdentityExists = mortgageEntries.some((entry) => entry.status === "UNKNOWN");
+  const selectionRequired = !selected && (openMortgageEntries.length > 0 || unresolvedMortgageIdentityExists);
+
   return {
     instrumentId: selected?.id || null,
     instrumentNumber: selectedEvidence,
     amount,
-    beneficiary: selected && beneficiary ? { value: beneficiary.name, state: "CONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/provisional target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
+    beneficiary: selected && beneficiary ? { value: beneficiary.name, state: "CONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
     position,
     positionBasis: useExplicit ? "EXPLICIT" as const : firstInTime.basis,
     positionConfidence: useExplicit ? "high" as const : firstInTime.confidence,
-    selectionRequired: activeMortgages.length > 1 && !selected,
+    selectionRequired,
+    _selectedStackStatus: selectedStackEntry?.status || null,
   };
 }
 
@@ -205,21 +223,24 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
     ? { ...stateRaw, value: requestedState.toUpperCase(), state: "CONFIRMED" as const, basis: `Examiner state override; packet extraction was ${stateRaw.value}` }
     : stateRaw;
 
-  const mortgages = instruments.filter((item) => typeIs(item.type, /mortgage|deed of trust|security deed/));
   const deeds = instruments.filter((item) => typeIs(item.type, /deed/) && !typeIs(item.type, /deed of trust|security deed/));
   const assignments = instruments.filter((item) => typeIs(item.type, /assignment/));
   const releases = instruments.filter((item) => typeIs(item.type, /release|satisfaction|reconveyance|discharge/));
-  const liens = instruments.filter((item) => typeIs(item.type, /lien|judgment|assessment|ucc/));
-  const lienStack = buildLienStack(instruments, releases);
+  const titleSummaryLienNumbers = raw.runSheet.entries.filter((entry) => isLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentNumber);
+  const lienStack = buildLienStack(instruments, releases, { titleSummaryOpenInstrumentNumbers: titleSummaryLienNumbers });
+  const lienIdentityIds = new Set(lienStack.map((entry) => entry.instrumentId));
+  const mortgages = instruments.filter((item) => lienIdentityIds.has(item.id) && isSecurityLienIdentityType(item.type));
+  const liens = instruments.filter((item) => lienIdentityIds.has(item.id) && !isSecurityLienIdentityType(item.type));
   const developedTarget = targetLien(instruments, raw, ledger, lienStack);
+  const { _selectedStackStatus: _selectedStackStatusIgnored, ...targetLienRecord } = developedTarget;
   const foreclosureAnalysis = buildForeclosureAnalysis({
     lienStack,
-    targetInstrumentId: developedTarget.instrumentId,
-    targetAmount: developedTarget.amount.value,
-    targetPosition: developedTarget.position.value,
-    targetPositionBasis: developedTarget.positionBasis,
-    targetPositionConfidence: developedTarget.positionConfidence,
-    selectionRequired: developedTarget.selectionRequired,
+    targetInstrumentId: targetLienRecord.instrumentId,
+    targetAmount: targetLienRecord.amount.value,
+    targetPosition: targetLienRecord.position.value,
+    targetPositionBasis: targetLienRecord.positionBasis,
+    targetPositionConfidence: targetLienRecord.positionConfidence,
+    selectionRequired: targetLienRecord.selectionRequired,
   });
 
   const record: CanonicalTitleRecord = {
@@ -264,7 +285,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
       landValue: fact(raw.taxes.landValue, ledger, "Land value extracted from tax evidence"),
       improvements: fact(raw.taxes.improvements, ledger, "Improvement value extracted from tax evidence"),
     },
-    targetLien: developedTarget,
+    targetLien: targetLienRecord,
     foreclosureAnalysis,
     dataQualityWarnings: [],
     matterRevision: args.matterRevision || 1,
@@ -274,8 +295,9 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   if (record.orderType.state !== "CONFIRMED") record.dataQualityWarnings.push("Order/QC profile was not established from packet evidence; an examiner profile selection is required.");
   if (record.state.state !== "CONFIRMED") record.dataQualityWarnings.push("State was not established from packet evidence.");
   if (!record.titleSummary.detected) record.dataQualityWarnings.push("Opening title summary was not confidently segmented; report-to-source reconciliation remains unresolved.");
-  if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("Multiple open/unknown mortgage or security liens exist and the target lien was not expressly identified. Select the target before McCalla foreclosure export is final.");
-  if (record.targetLien.position.value === "Needs review") record.dataQualityWarnings.push("Lien position could not be developed from first-in-time recording evidence and requires examiner priority review.");
+  if (record.targetLien.selectionRequired) record.dataQualityWarnings.push("The target security lien could not be developed automatically because the open/unknown mortgage identities or title-summary reconciliation remain ambiguous. Examiner selection is an exception path only.");
+  if (record.targetLien.position.value === "Needs review") record.dataQualityWarnings.push("Lien position could not be developed from reliable first-in-time open-lien evidence and requires examiner priority review.");
   if (record.targetLien.positionBasis === "FIRST_IN_TIME" && record.targetLien.positionConfidence !== "high") record.dataQualityWarnings.push("Lien position is a first-in-time screening result with a priority exception or sequencing uncertainty; jurisdiction-specific priority review is required.");
+  if (record.foreclosureAnalysis.lienStack.some((entry) => entry.status === "UNKNOWN")) record.dataQualityWarnings.push("One or more true lien identities have unresolved open/released status. They are not counted as open and may block final priority until resolved.");
   return record;
 }
