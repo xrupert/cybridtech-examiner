@@ -34,6 +34,7 @@ async function persist(manifest: BatchManifest): Promise<void> {
   await put(path(manifest.batchId), JSON.stringify(manifest), {
     access: "private",
     addRandomSuffix: false,
+    allowOverwrite: true,
     contentType: "application/json",
   });
 }
