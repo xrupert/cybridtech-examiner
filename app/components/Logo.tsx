@@ -1,20 +1,18 @@
+import { LOGO_SRC } from "./logo-src";
+
 type LogoProps = {
   height?: number;
   tone?: "dark" | "letterhead";
   className?: string;
 };
 
-export function Logo({ height = 32, tone = "dark", className }: LogoProps) {
-  const src = tone === "letterhead"
-    ? "/cybridtech-logo-letterhead.png"
-    : "/cybridtech-logo-dark.png";
-
+export function Logo({ height = 34, className }: LogoProps) {
   return (
     <img
-      src={src}
+      src={LOGO_SRC}
       alt="Cybrid Title"
       className={className}
-      style={{ height, width: "auto", display: "block" }}
+      style={{ height, width: "auto", display: "block", borderRadius: Math.max(4, Math.round(height * 0.12)) }}
     />
   );
 }
