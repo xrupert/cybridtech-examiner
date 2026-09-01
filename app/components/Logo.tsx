@@ -6,44 +6,28 @@ type LogoProps = {
   className?: string;
 };
 
-// The supplied Cybrid Title artwork lives on a square transparent canvas.
-// Render only the visible mark so the logo is not visually reduced to a thumbnail.
-const SOURCE_SIZE = 1254;
-const MARK_BOUNDS = { left: 273, top: 225, width: 706, height: 770 } as const;
+// LOGO_SRC is already a tightly cropped, lossless derivative of the supplied
+// Cybrid Title artwork. Render it at its own aspect ratio — never crop it again.
+const ARTWORK_WIDTH = 738;
+const ARTWORK_HEIGHT = 802;
 
 export function Logo({ height = 34, className }: LogoProps) {
-  const scale = height / MARK_BOUNDS.height;
-  const renderedSourceSize = SOURCE_SIZE * scale;
-  const width = MARK_BOUNDS.width * scale;
+  const width = height * (ARTWORK_WIDTH / ARTWORK_HEIGHT);
 
   return (
-    <span
+    <img
       className={className}
-      role="img"
-      aria-label="Cybrid Title"
+      src={LOGO_SRC}
+      alt="Cybrid Title"
+      width={width}
+      height={height}
       style={{
-        position: "relative",
-        display: "inline-block",
         width,
         height,
-        overflow: "hidden",
+        display: "block",
+        objectFit: "contain",
         flex: "0 0 auto",
       }}
-    >
-      <img
-        src={LOGO_SRC}
-        alt=""
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          width: renderedSourceSize,
-          height: renderedSourceSize,
-          maxWidth: "none",
-          left: -MARK_BOUNDS.left * scale,
-          top: -MARK_BOUNDS.top * scale,
-          display: "block",
-        }}
-      />
-    </span>
+    />
   );
 }
