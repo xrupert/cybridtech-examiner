@@ -17,45 +17,41 @@ jobs:
         with:
           ref: audit/munger-inversion
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - name: Apply fail-closed inversion repairs
         shell: python
         run: |
           from pathlib import Path
 
-          def replace(path, old, new):
+          def replace_exact(path, old, new):
               p = Path(path)
               text = p.read_text()
               if old not in text:
-                  raise SystemExit(f"Expected source fragment not found in {path}: {old[:120]!r}")
-              p.write_text(text.replace(old, new))
+                  raise SystemExit(f"Expected source fragment not found in {path}: {old[:140]!r}")
+              p.write_text(text.replace(old, new, 1))
 
-          # A heading such as 'Abstractor Notes' inside the title report is not a distinct Abstractor Sheet.
-          replace(
+          replace_exact(
               "lib/canonical-title-builder.ts",
               'const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\\b(run sheet|abstractor sheet|abstractor)\\b/i.test(`${item.documentType} ${item.quote}`));',
               'const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\\b(run sheet|abstractor sheet)\\b/i.test(`${item.documentType} ${item.quote}`));',
           )
 
-          # A conveyance deed is not promoted to a second standalone lien identity merely because its title says vendor's lien.
-          replace(
+          replace_exact(
               "lib/lien-stack.ts",
-              '  if (isSecurityLienIdentityType(text)) return true;\n  return /judgment|notice and statement of lien|mechanic(?:\'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\\blien\\b/i.test(text);',
-              '  if (isSecurityLienIdentityType(text)) return true;\n  if (/\\bdeed\\b/i.test(text) && !/deed of trust|security deed/i.test(text)) return false;\n  return /judgment|notice and statement of lien|mechanic(?:\'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\\blien\\b/i.test(text);',
+              "  if (isSecurityLienIdentityType(text)) return true;\n  return /judgment|notice and statement of lien|mechanic(?:'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\\blien\\b/i.test(text);",
+              "  if (isSecurityLienIdentityType(text)) return true;\n  if (/\\bdeed\\b/i.test(text) && !/deed of trust|security deed/i.test(text)) return false;\n  return /judgment|notice and statement of lien|mechanic(?:'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\\blien\\b/i.test(text);",
           )
 
-          # Reconciliation is one-to-one and requires evidence on both the report side and the source side.
-          old = '''  const entries = summarySource.entries.map((entry): ReconciledEntry => {
+          replace_exact(
+              "lib/run-sheet-reconciler.ts",
+              '''  const entries = summarySource.entries.map((entry): ReconciledEntry => {
             const source = findSource(entry, record.instruments);
             const evidence = [...entry.evidence, ...(source?.evidence || [])];
             const evidenceIds = [...new Set([...(entry.evidenceIds || []), ...(source?.evidenceIds || [])])];
             if (!source) return { runSheetEntryId: entry.id, sourceInstrumentId: null, status: "SOURCE_MISSING", mismatches: [], evidence, evidenceIds };
             const mismatches = mismatch(entry, source);
             return { runSheetEntryId: entry.id, sourceInstrumentId: source.id, status: mismatches.length ? "MISMATCH" : "MATCH", mismatches, evidence, evidenceIds };
-          });'''.replace('          ', '')
-          new = '''  const usedSourceIds = new Set<string>();
+          });''',
+              '''  const usedSourceIds = new Set<string>();
           const entries = summarySource.entries.map((entry): ReconciledEntry => {
             const availableSources = record.instruments.filter((source) => !usedSourceIds.has(source.id));
             const source = findSource(entry, availableSources);
@@ -69,11 +65,12 @@ jobs:
             usedSourceIds.add(source.id);
             const mismatches = mismatch(entry, source);
             return { runSheetEntryId: entry.id, sourceInstrumentId: source.id, status: mismatches.length ? "MISMATCH" : "MATCH", mismatches, evidence, evidenceIds };
-          });'''.replace('          ', '')
-          replace("lib/run-sheet-reconciler.ts", old, new)
+          });''',
+          )
 
-          # With multiple mortgages and no selected target, Q13-Q16 must not silently use the oldest mortgage as controlling.
-          old = '''function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
+          replace_exact(
+              "lib/canonical-qc-engine.ts",
+              '''function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
             const selected = record.targetLien.instrumentId ? record.mortgages.find((item) => item.id === record.targetLien.instrumentId) : undefined;
             if (selected) return selected;
             return [...record.mortgages].sort((a, b) => {
@@ -84,16 +81,15 @@ jobs:
               if (!Number.isFinite(bd)) return -1;
               return ad - bd;
             })[0];
-          }'''.replace('          ', '')
-          new = '''function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
+          }''',
+              '''function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
             const selected = record.targetLien.instrumentId ? record.mortgages.find((item) => item.id === record.targetLien.instrumentId) : undefined;
             if (selected) return selected;
             return record.mortgages.length === 1 ? record.mortgages[0] : undefined;
-          }'''.replace('          ', '')
-          replace("lib/canonical-qc-engine.ts", old, new)
+          }''',
+          )
 
-          # Required McCalla export values must be confirmed, and required McCalla columns cannot be removed by customization.
-          replace(
+          replace_exact(
               "lib/export-profiles.ts",
               '''export function validateExportProfile(profile: ExportProfile, rows: ExportRowContext[]): string[] {
             const warnings: string[] = [];
@@ -104,7 +100,7 @@ jobs:
               });
             }
             return warnings;
-          }'''.replace('          ', ''),
+          }''',
               '''function evidenceStateForPath(context: ExportRowContext, path: ExportPath): string | null {
             const { record } = context;
             switch (path) {
@@ -141,31 +137,30 @@ jobs:
               });
             }
             return warnings;
-          }'''.replace('          ', ''),
+          }''',
           )
-          replace(
+
+          replace_exact(
               "lib/export-profiles.ts",
               '''export function createExportProfile(clientName: string, columns: ExportColumn[], format: "csv" | "json" = "csv"): ExportProfile {
             const normalized = clientName.trim() || "Client";
             return { id: `${normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-custom-v1`, version: 1, clientName: normalized, format, columns };
-          }'''.replace('          ', ''),
+          }''',
               '''export function createExportProfile(clientName: string, columns: ExportColumn[], format: "csv" | "json" = "csv"): ExportProfile {
             const normalized = clientName.trim() || "Client";
             const required = /^mccalla$/i.test(normalized) ? MCCALLA_EXPORT_PROFILE.columns.filter((column) => column.required) : [];
             const merged = [...new Map([...required, ...columns].map((column) => [column.key, column])).values()];
             return { id: `${normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-custom-v1`, version: 1, clientName: normalized, format, columns: merged };
-          }'''.replace('          ', ''),
+          }''',
           )
 
-          # A model's self-reported confidence alone may not make a fact source-confirmed.
-          replace(
+          replace_exact(
               "lib/canonical-title-builder.ts",
               '    const strong = matchingNodes.some((node) => node && (node.nativeVerified || node.confidence >= 0.8));\n    state = strong ? "CONFIRMED" : "UNCONFIRMED";',
               '    const sourceVerified = matchingNodes.some((node) => node && node.nativeVerified);\n    state = sourceVerified ? "CONFIRMED" : "UNCONFIRMED";',
           )
 
-          # The semantic checker cannot promote unverified visual/model-only evidence to a conclusive PASS/FAIL.
-          replace(
+          replace_exact(
               "lib/openai-title-checker.ts",
               '  return nodes.length > 0 && nodes.every((node) => node && (node.source !== "native" ? node.confidence >= 0.7 : node.nativeVerified));',
               '  return nodes.length > 0 && nodes.every((node) => node && node.nativeVerified);',
