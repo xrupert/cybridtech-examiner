@@ -82,13 +82,18 @@ function sameInstrument(a: string, b: string): boolean {
   return Boolean(left && left === right);
 }
 
+function verifiedEvidence(ledger: TitleEvidenceLedger, ids: string[] | undefined): boolean {
+  if (!ids?.length) return false;
+  return ids.some((id) => ledger.evidence.find((node) => node.id === id)?.nativeVerified);
+}
+
 function summaryAmount(raw: RawTitlePacketExtraction, instrumentNumber: string, ledger: TitleEvidenceLedger): EvidenceValue | null {
   const entry = raw.runSheet.entries.find((candidate) => sameInstrument(candidate.instrumentNumber, instrumentNumber) && clean(candidate.amount));
   if (!entry) return null;
   const mapped = evidenceRefsForAnchors(ledger, entry.evidence || []);
   return {
     value: clean(entry.amount) || "Needs review",
-    state: mapped.refs.length ? "CONFIRMED" : "UNCONFIRMED",
+    state: verifiedEvidence(ledger, mapped.ids) ? "CONFIRMED" : "UNCONFIRMED",
     evidence: mapped.refs,
     evidenceIds: mapped.ids,
     basis: "Lien amount developed from matching title-summary entry because the normalized source instrument amount was unavailable",
@@ -125,7 +130,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
   const beneficiary = selected?.parties.find((party) => /beneficiary|holder|mortgagee|lender/i.test(party.role));
   const selectedEvidence: EvidenceValue = selected ? {
     value: selected.instrumentNumber,
-    state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
+    state: verifiedEvidence(ledger, selected.evidenceIds) ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
     basis: selectionBasis,
@@ -133,7 +138,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
 
   const sourceAmount: EvidenceValue | null = selected && selected.amount !== "Needs review" ? {
     value: selected.amount,
-    state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
+    state: verifiedEvidence(ledger, selected.evidenceIds) ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
     basis: "Recorded lien amount from selected/automatically developed target security instrument",
@@ -159,7 +164,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     instrumentId: selected?.id || null,
     instrumentNumber: selectedEvidence,
     amount,
-    beneficiary: selected && beneficiary ? { value: beneficiary.name, state: "CONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
+    beneficiary: selected && beneficiary ? { value: beneficiary.name, state: verifiedEvidence(ledger, beneficiary.evidenceIds) ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
     position,
     positionBasis: useExplicit ? "EXPLICIT" as const : firstInTime.basis,
     positionConfidence: useExplicit ? "high" as const : firstInTime.confidence,

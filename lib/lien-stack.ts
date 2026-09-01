@@ -23,6 +23,7 @@ function normalizeInstrumentNumber(value: string): string {
 
 const RELEASE_PATTERN = /release|satisfaction|reconveyance|discharge|termination|cancel(?:led|lation)?/i;
 const DERIVATIVE_LIEN_EVENT_PATTERN = /assignment|modification|amendment|extension|renewal|subordination agreement|appointment|substitute trustee|substitution of trustee|trustee appointment|notice of default|notice of trustee(?:'s)? sale|notice of sale|foreclosure notice|corrective|correction|forbearance/i;
+const CONVEYANCE_DEED_PATTERN = /\b(?:special warranty|general warranty|warranty|grant|quitclaim|quit claim|bargain(?: and| &) sale|trustee'?s?|sheriff'?s?|tax|executor'?s?|administrator'?s?)?\s*deed\b/i;
 
 export function isSecurityLienIdentityType(type: string): boolean {
   const text = clean(type);
@@ -36,6 +37,9 @@ export function isLienIdentityType(type: string): boolean {
   const text = clean(type);
   if (!text || RELEASE_PATTERN.test(text) || DERIVATIVE_LIEN_EVENT_PATTERN.test(text)) return false;
   if (isSecurityLienIdentityType(text)) return true;
+  // Conveyance deeds remain vesting instruments even when the caption reserves a vendor's lien.
+  // A separate vendor-lien/security instrument must be extracted before it gets its own lien identity.
+  if (CONVEYANCE_DEED_PATTERN.test(text) && !/deed of trust|security deed/i.test(text)) return false;
   return /judgment|notice and statement of lien|mechanic(?:'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\blien\b/i.test(text);
 }
 

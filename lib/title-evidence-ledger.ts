@@ -71,7 +71,7 @@ export function buildEvidenceLedger(args: {
     if (seen.has(key)) continue;
     seen.add(key);
     const nativePage = args.nativeLedger?.pages.find((page) => page.page === anchor.page);
-    const nativeVerified = source === "native" && Boolean(nativePage && !nativePage.needsVisualReview && fuzzyContained(anchor.quote, nativePage.text));
+    const nativeVerified = Boolean(nativePage && !nativePage.needsVisualReview && fuzzyContained(anchor.quote, nativePage.text));
     evidence.push({
       id: evidenceId(args.packetHash, anchor),
       packetHash: args.packetHash,

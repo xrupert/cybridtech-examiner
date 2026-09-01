@@ -90,14 +90,7 @@ function currentOwnerEvidence(record: CanonicalTitleRecord): { refs: EvidenceRef
 function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
   const selected = record.targetLien.instrumentId ? record.mortgages.find((item) => item.id === record.targetLien.instrumentId) : undefined;
   if (selected) return selected;
-  return [...record.mortgages].sort((a, b) => {
-    const ad = Date.parse(a.recordingDate);
-    const bd = Date.parse(b.recordingDate);
-    if (!Number.isFinite(ad) && !Number.isFinite(bd)) return 0;
-    if (!Number.isFinite(ad)) return 1;
-    if (!Number.isFinite(bd)) return -1;
-    return ad - bd;
-  })[0];
+  return record.mortgages.length === 1 ? record.mortgages[0] : undefined;
 }
 
 function factAnswered(value: CanonicalTitleRecord["flags"]["hoa"]): boolean {

@@ -30,9 +30,10 @@ export function applyReviewDecisions(review: TitleReviewResult, decisions: Revie
   if (positionDecision?.decision === "CORRECT" && positionDecision.correctedValue?.trim()) {
     record.targetLien.position = {
       value: positionDecision.correctedValue.trim(),
-      state: "CONFIRMED",
+      state: "UNCONFIRMED",
       evidence: record.targetLien.position.evidence,
-      basis: `Examiner correction: ${positionDecision.reason}`,
+      evidenceIds: record.targetLien.position.evidenceIds,
+      basis: `Examiner-approved correction (not documentary source confirmation): ${positionDecision.reason}`,
     };
   }
 
