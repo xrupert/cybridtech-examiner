@@ -16,6 +16,7 @@ export const MCCALLA_EXPORT_PROFILE: ExportProfile = {
   columns: [
     { key: "ts_number", label: "TS Number", path: "tsNumber", required: true },
     { key: "borrower_name", label: "Borrower Name", path: "borrower", required: true },
+    { key: "current_owner", label: "Current Owner", path: "currentOwner" },
     { key: "property_address", label: "Property Address", path: "propertyAddress", required: true },
     { key: "lien_amount", label: "Lien Amount", path: "targetLien.amount", required: true },
     { key: "lien_position", label: "Lien Position", path: "targetLien.position", required: true },
@@ -34,7 +35,6 @@ export const NCALA_DEMO_EXPORT_PROFILE = MCCALLA_EXPORT_PROFILE;
 
 export const AVAILABLE_EXPORT_COLUMNS: ExportColumn[] = [
   ...MCCALLA_EXPORT_PROFILE.columns,
-  { key: "current_owner", label: "Current Owner", path: "currentOwner" },
   { key: "order_number", label: "Client Order Number", path: "orderNumber" },
   { key: "order_type", label: "Order Type", path: "orderType" },
   { key: "state", label: "State", path: "state" },
@@ -136,12 +136,42 @@ function pathValue(context: ExportRowContext, path: ExportPath): string | number
 
 function csv(value: unknown): string { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
 
+function evidenceStateForPath(context: ExportRowContext, path: ExportPath): string | null {
+  const { record } = context;
+  switch (path) {
+    case "orderNumber": return record.orderNumber.state;
+    case "tsNumber": return record.tsNumber.state;
+    case "borrower": return record.borrower.state;
+    case "currentOwner": return record.currentOwner.state;
+    case "propertyAddress": return record.propertyAddress.state;
+    case "state": return record.state.state;
+    case "county": return record.county.state;
+    case "parcelId": return record.parcelId.state;
+    case "orderType": return record.orderType.state;
+    case "effectiveDate": return record.effectiveDate.state;
+    case "targetLien.instrumentNumber": return record.targetLien.instrumentNumber.state;
+    case "targetLien.amount": return record.targetLien.amount.state;
+    case "targetLien.beneficiary": return record.targetLien.beneficiary.state;
+    case "targetLien.position": return record.targetLien.position.state;
+    default: return null;
+  }
+}
+
 export function validateExportProfile(profile: ExportProfile, rows: ExportRowContext[]): string[] {
   const warnings: string[] = [];
   for (const column of profile.columns.filter((item) => item.required)) {
     rows.forEach((row, index) => {
-      const value = String(pathValue(row, column.path) ?? "").trim();
-      if (!value || /^needs review$|^unresolved$/i.test(value)) warnings.push(`Row ${index + 1}: required McCalla export field ${column.label} is unresolved.`);
+  const foreclosureOrder = row.record.orderType.state === "CONFIRMED" && /^foreclosure$/i.test(row.record.orderType.value);
+  if (!foreclosureOrder && (column.path === "borrower" || column.path.startsWith("targetLien."))) return;
+  const value = String(pathValue(row, column.path) ?? "").trim();
+      if (!value || /^needs review$|^unresolved$/i.test(value)) {
+        warnings.push(`Row ${index + 1}: required McCalla export field ${column.label} is unresolved.`);
+        return;
+      }
+      const state = evidenceStateForPath(row, column.path);
+      const examinerPriorityAllowed = column.path === "targetLien.position" && state === "EXAMINER_CONFIRMED";
+      if (state && state !== "CONFIRMED" && !examinerPriorityAllowed) warnings.push(`Row ${index + 1}: required McCalla export field ${column.label} is not source-confirmed (${state}).`);
+      if (column.path === "targetLien.positionBasis" && !["CONFIRMED", "EXAMINER_CONFIRMED"].includes(row.record.targetLien.position.state)) warnings.push(`Row ${index + 1}: required McCalla export field ${column.label} cannot be finalized until lien position is source-confirmed.`);
     });
   }
   return warnings;
@@ -160,5 +190,7 @@ export function renderJson(profile: ExportProfile, rows: ExportRowContext[]): st
 
 export function createExportProfile(clientName: string, columns: ExportColumn[], format: "csv" | "json" = "csv"): ExportProfile {
   const normalized = clientName.trim() || "Client";
-  return { id: `${normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-custom-v1`, version: 1, clientName: normalized, format, columns };
+  const required = /^mccalla$/i.test(normalized) ? MCCALLA_EXPORT_PROFILE.columns.filter((column) => column.required) : [];
+  const merged = [...new Map([...required, ...columns].map((column) => [column.key, column])).values()];
+  return { id: `${normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-custom-v1`, version: 1, clientName: normalized, format, columns: merged };
 }

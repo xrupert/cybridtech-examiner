@@ -164,11 +164,18 @@ function reconcileSummary(record: CanonicalTitleRecord, summarySource: RunSheetS
     };
   }
 
+  const usedSourceIds = new Set<string>();
   const entries = summarySource.entries.map((entry): ReconciledEntry => {
-    const source = findSource(entry, record.instruments);
-    const evidence = [...entry.evidence, ...(source?.evidence || [])];
+    const availableSources = record.instruments.filter((source) => !usedSourceIds.has(source.id));
+    const source = findSource(entry, availableSources);
+    const reportEvidence = entry.evidence || [];
+    const sourceEvidence = source?.evidence || [];
+    const evidence = [...reportEvidence, ...sourceEvidence];
     const evidenceIds = [...new Set([...(entry.evidenceIds || []), ...(source?.evidenceIds || [])])];
-    if (!source) return { runSheetEntryId: entry.id, sourceInstrumentId: null, status: "SOURCE_MISSING", mismatches: [], evidence, evidenceIds };
+    if (!source || !reportEvidence.length || !sourceEvidence.length) {
+      return { runSheetEntryId: entry.id, sourceInstrumentId: source?.id || null, status: "SOURCE_MISSING", mismatches: [], evidence, evidenceIds };
+    }
+    usedSourceIds.add(source.id);
     const mismatches = mismatch(entry, source);
     return { runSheetEntryId: entry.id, sourceInstrumentId: source.id, status: mismatches.length ? "MISMATCH" : "MATCH", mismatches, evidence, evidenceIds };
   });

@@ -1,4 +1,4 @@
-import { profileForOrderType, type QcProfileCheck } from "./qc-profiles";
+import { profileForOrderType, UNRESOLVED_QC_PROFILE, type QcProfileCheck } from "./qc-profiles";
 import type { RunSheetReconciliation } from "./run-sheet-reconciler";
 import { issueMetadata, reduceQcChecks } from "./title-qc-engine";
 import type { CanonicalInstrument, CanonicalTitleRecord, QcCheckResult, QcProfileResult, QcStatus } from "./title-domain";
@@ -28,12 +28,8 @@ function result(check: QcProfileCheck, status: QcStatus, summary: string, eviden
   };
 }
 
-function normalizeName(value: string): string[] {
-  return value.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((token) => token.length > 1 && !["jr", "sr", "llc", "inc", "the"].includes(token));
-}
-
-function partyNames(instrument: CanonicalInstrument, role: RegExp): string[] {
-  return instrument.parties.filter((party) => role.test(party.role)).flatMap((party) => normalizeName(party.name));
+function partyNames(instrument: CanonicalInstrument, rolePattern: RegExp): string[] {
+  return instrument.parties.filter((party) => rolePattern.test(party.role)).map((party) => party.name.toLowerCase().replace(/[^a-z0-9]/g, "")).filter(Boolean);
 }
 
 function chainLooksContinuous(deeds: CanonicalInstrument[]): boolean | null {
@@ -90,14 +86,7 @@ function currentOwnerEvidence(record: CanonicalTitleRecord): { refs: EvidenceRef
 function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
   const selected = record.targetLien.instrumentId ? record.mortgages.find((item) => item.id === record.targetLien.instrumentId) : undefined;
   if (selected) return selected;
-  return [...record.mortgages].sort((a, b) => {
-    const ad = Date.parse(a.recordingDate);
-    const bd = Date.parse(b.recordingDate);
-    if (!Number.isFinite(ad) && !Number.isFinite(bd)) return 0;
-    if (!Number.isFinite(ad)) return 1;
-    if (!Number.isFinite(bd)) return -1;
-    return ad - bd;
-  })[0];
+  return record.mortgages.length === 1 ? record.mortgages[0] : undefined;
 }
 
 function factAnswered(value: CanonicalTitleRecord["flags"]["hoa"]): boolean {
@@ -172,9 +161,18 @@ function profileCheck(
       if (!record.targetLien.instrumentId) return result(check, "CANNOT_CONFIRM", "No foreclosure target lien was established from the packet.");
       return result(check, "PASS", `Target lien established as ${record.targetLien.instrumentNumber.value}.`, record.targetLien.instrumentNumber.evidence, record.targetLien.instrumentNumber.evidenceIds);
 
+    case "TARGET_LIEN_AMOUNT":
+      if (!record.targetLien.instrumentId) return result(check, "CANNOT_CONFIRM", "Target lien amount cannot be confirmed until the foreclosure target lien is established.");
+      if (record.targetLien.amount.state === "CONFIRMED" && record.targetLien.amount.value !== "Needs review") {
+        return result(check, "PASS", `Target lien amount confirmed as ${record.targetLien.amount.value} from the controlling security instrument.`, record.targetLien.amount.evidence, record.targetLien.amount.evidenceIds);
+      }
+      return result(check, "CANNOT_CONFIRM", "Target lien amount is not source-confirmed from the controlling recorded security instrument.", record.targetLien.amount.evidence, record.targetLien.amount.evidenceIds);
+
     case "TARGET_LIEN_POSITION_ESTABLISHED": {
-      if (record.targetLien.position.state === "CONFIRMED") {
-        const summary = record.targetLien.positionBasis === "EXPLICIT"
+      if (record.targetLien.position.state === "CONFIRMED" || record.targetLien.position.state === "EXAMINER_CONFIRMED") {
+        const summary = record.targetLien.positionBasis === "EXAMINER"
+          ? `Target lien position is examiner-confirmed as ${record.targetLien.position.value}; documentary source facts remain separately auditable.`
+          : record.targetLien.positionBasis === "EXPLICIT"
           ? `Target lien position is expressly stated as ${record.targetLien.position.value}.`
           : `Target lien position developed as ${record.targetLien.position.value} using first-in-time recording chronology with no detected priority exception requiring downgrade.`;
         return result(check, "PASS", summary, record.targetLien.position.evidence, record.targetLien.position.evidenceIds);
@@ -249,62 +247,57 @@ function profileCheck(
     }
 
     case "FEDERAL_TAX_LIEN_REVIEWED": {
-      if (secondLienSearch(record)) return result(check, "NOT_APPLICABLE", "Federal tax lien review is outside the RCS 2nd Lien package scope.");
-      const value = record.flags.federalTaxLien.value.toLowerCase();
-      if (/none|no federal|not found|n\/a|not applicable/.test(value) && record.flags.federalTaxLien.state === "CONFIRMED") return result(check, "PASS", `Federal tax lien status: ${record.flags.federalTaxLien.value}.`, record.flags.federalTaxLien.evidence, record.flags.federalTaxLien.evidenceIds);
-      if (/federal|irs|tax lien/.test(value) && !/none|not found|no federal/.test(value)) return result(check, "FAIL", `Federal tax lien identified: ${record.flags.federalTaxLien.value}.`, record.flags.federalTaxLien.evidence, record.flags.federalTaxLien.evidenceIds);
-      return result(check, "CANNOT_CONFIRM", "Federal tax lien status was not expressly established by the extracted evidence.", record.flags.federalTaxLien.evidence, record.flags.federalTaxLien.evidenceIds);
+      const federal = record.instruments.filter((item) => /federal tax|irs/i.test(item.type));
+      const evidence = federal.flatMap((item) => item.evidence).concat(record.flags.federalTaxLien.evidence);
+      const ids = [...new Set(federal.flatMap((item) => item.evidenceIds || []).concat(record.flags.federalTaxLien.evidenceIds || []))];
+      if (factAnswered(record.flags.federalTaxLien) && negativeOrNA(record.flags.federalTaxLien.value)) return result(check, "NOT_APPLICABLE", `Federal tax lien status: ${record.flags.federalTaxLien.value}.`, evidence, ids);
+      if (federal.length) return result(check, "CANNOT_CONFIRM", `${federal.length} federal-tax/IRS instrument${federal.length === 1 ? "" : "s"} require status and foreclosure-treatment review.`, evidence, ids);
+      return result(check, "CANNOT_CONFIRM", "Federal tax lien status was not expressly established by packet evidence.", evidence, ids);
     }
 
-    case "RELEASES_RECONCILED":
-      return result(check, "CANNOT_CONFIRM", "Release/satisfaction applicability requires semantic review of open liens, references, and supplied release instruments.", [...record.mortgages, ...record.releases].flatMap((item) => item.evidence), [...record.mortgages, ...record.releases].flatMap((item) => item.evidenceIds || []));
+    case "RELEASES_RECONCILED": {
+      const released = record.foreclosureAnalysis.lienStack.filter((item) => item.status === "RELEASED");
+      const unknown = record.foreclosureAnalysis.lienStack.filter((item) => item.status === "UNKNOWN");
+      const evidence = record.releases.flatMap((item) => item.evidence).concat(released.flatMap((item) => item.evidence), unknown.flatMap((item) => item.evidence));
+      const ids = [...new Set(record.releases.flatMap((item) => item.evidenceIds || []).concat(released.flatMap((item) => item.evidenceIds || []), unknown.flatMap((item) => item.evidenceIds || [])))];
+      if (unknown.length) return result(check, "CANNOT_CONFIRM", `${unknown.length} lien identity status${unknown.length === 1 ? " is" : "es are"} unresolved; release/satisfaction reconciliation is incomplete.`, evidence, ids);
+      if (record.releases.length || released.length) return result(check, "PASS", `${released.length} lien identit${released.length === 1 ? "y is" : "ies are"} reconciled as released/satisfied from supplied evidence.`, evidence, ids);
+      return result(check, "NOT_APPLICABLE", "No release/satisfaction instrument requiring reconciliation was identified in the supplied packet.");
+    }
 
     case "PROPERTY_IDENTITY_RECONCILES": {
-      const secured = record.mortgages.map((item) => item.propertyAddress).filter((value) => value && value !== "Needs review");
-      const evidence = [record.propertyAddress.evidence, ...record.mortgages.map((item) => item.evidence)].flat();
-      const ids = [record.propertyAddress.evidenceIds || [], ...record.mortgages.map((item) => item.evidenceIds || [])].flat();
-      if (!secured.length) return result(check, "CANNOT_CONFIRM", "The secured-property address was not normalized from the mortgage/deed-of-trust evidence.", evidence, ids);
-      const expected = normalizeAddress(record.propertyAddress.value);
-      if (expected && secured.every((value) => normalizeAddress(value) === expected)) return result(check, "PASS", "Property address reconciles to the supplied mortgage/security instrument.", evidence, ids);
-      return result(check, "FAIL", "Property address does not reconcile across the title summary and mortgage/security evidence.", evidence, ids);
+      const instrument = controllingSecurityInstrument(record);
+      if (!instrument) return result(check, "CANNOT_CONFIRM", "A single controlling security instrument was not established for property-identity review.", record.propertyAddress.evidence, record.propertyAddress.evidenceIds);
+      const reportAddress = record.propertyAddress.value !== "Needs review" ? normalizeAddress(record.propertyAddress.value) : "";
+      const securityAddress = instrument.propertyAddress !== "Needs review" ? normalizeAddress(instrument.propertyAddress) : "";
+      const evidence = instrument.evidence.concat(record.propertyAddress.evidence);
+      const ids = [...new Set((instrument.evidenceIds || []).concat(record.propertyAddress.evidenceIds || []))];
+      if (reportAddress && securityAddress && reportAddress === securityAddress) return result(check, "PASS", "Property address on the controlling security instrument matches the canonical property address.", evidence, ids);
+      if (reportAddress && securityAddress && reportAddress !== securityAddress) return result(check, "FAIL", `Property address mismatch: report ${record.propertyAddress.value} vs security instrument ${instrument.propertyAddress}.`, evidence, ids);
+      return result(check, "CANNOT_CONFIRM", "Property address/security identity could not be fully compared from normalized evidence.", evidence, ids);
     }
 
     case "LOAN_DOCUMENT_TYPE_REVIEWED": {
-      const loan = controllingSecurityInstrument(record);
-      if (!loan) return result(check, "CANNOT_CONFIRM", "No controlling mortgage/deed-of-trust instrument was established for loan-document-type review.");
-      return result(check, "PASS", `Loan document type: ${loan.type}.`, loan.evidence, loan.evidenceIds);
+      const instrument = controllingSecurityInstrument(record);
+      return instrument ? result(check, "PASS", `Controlling loan/security document type: ${instrument.type}.`, instrument.evidence, instrument.evidenceIds) : result(check, "CANNOT_CONFIRM", "Controlling loan/security document type could not be selected from the normalized mortgage instruments.");
     }
 
     case "LOAN_RECORDING_DATE_REVIEWED": {
-      const loan = controllingSecurityInstrument(record);
-      if (!loan || loan.recordingDate === "Needs review") return result(check, "CANNOT_CONFIRM", "The controlling security instrument recording date was not established.", loan?.evidence || [], loan?.evidenceIds || []);
-      return result(check, "PASS", `Controlling loan recording date: ${loan.recordingDate}.`, loan.evidence, loan.evidenceIds);
+      const instrument = controllingSecurityInstrument(record);
+      if (!instrument) return result(check, "CANNOT_CONFIRM", "Controlling loan/security instrument was not established.");
+      return instrument.recordingDate !== "Needs review" ? result(check, "PASS", `Controlling loan/security instrument recorded ${instrument.recordingDate}.`, instrument.evidence, instrument.evidenceIds) : result(check, "CANNOT_CONFIRM", "Controlling loan recording date is not stated in normalized evidence.", instrument.evidence, instrument.evidenceIds);
     }
 
     case "LOAN_STATUS_REVIEWED": {
-      const loan = controllingSecurityInstrument(record);
-      if (!loan) return result(check, "CANNOT_CONFIRM", "No controlling security instrument was established for loan-status review.");
-      const stack = record.foreclosureAnalysis.lienStack.find((entry) => entry.instrumentId === loan.id);
-      const trailing = record.instruments.filter((item) => /notice of default|trustee|foreclosure|sale/i.test(item.type) && (item.referencedInstrumentNumbers.some((number) => number.replace(/\W/g, "") === loan.instrumentNumber.replace(/\W/g, "")) || item.parties.some((party) => loan.parties.some((loanParty) => normalizeName(loanParty.name).some((token) => normalizeName(party.name).includes(token))))));
-      const evidence = loan.evidence.concat(trailing.flatMap((item) => item.evidence));
-      const ids = [...new Set((loan.evidenceIds || []).concat(trailing.flatMap((item) => item.evidenceIds || [])))];
-      if (stack?.status === "RELEASED") return result(check, "PASS", `Loan/lien status: Satisfied/Released. ${loan.instrumentNumber} is excluded from the open-lien stack.`, evidence, ids);
-      if (stack?.status === "OPEN" && trailing.length) return result(check, "PASS", `Loan/lien status: Open with foreclosure/default-related trailing document evidence (${trailing.map((item) => item.type).join(", ")}).`, evidence, ids);
-      if (stack?.status === "OPEN") return result(check, "PASS", "Loan/lien status: Active/Open (unreleased). No separate default conclusion is inferred without supporting evidence.", evidence, ids);
-      return result(check, "CANNOT_CONFIRM", `Loan/lien status is unresolved. Source status was ${loan.status}.`, evidence, ids);
+      const instrument = controllingSecurityInstrument(record);
+      if (!instrument) return result(check, "CANNOT_CONFIRM", "Controlling loan/lien could not be selected for status review.");
+      const stack = record.foreclosureAnalysis.lienStack.find((item) => item.instrumentId === instrument.id);
+      if (!stack || stack.status === "UNKNOWN") return result(check, "CANNOT_CONFIRM", "Controlling loan/lien status remains unresolved from the packet evidence.", instrument.evidence, instrument.evidenceIds);
+      return result(check, "PASS", `Controlling loan/lien status developed as ${stack.status}.`, stack.evidence, stack.evidenceIds);
     }
 
-    case "RECOURSE_REVIEWED": {
-      const loan = controllingSecurityInstrument(record);
-      if (!loan) return result(check, "NOT_APPLICABLE", "No controlling security instrument was established, so recourse review is not applicable.");
-      const recourseEvidence = loan.evidence.filter((item) => /\brecourse\b|non[- ]?recourse|without recourse/i.test(item.quote));
-      const ids = recourseEvidence.map((ref) => {
-        const index = loan.evidence.findIndex((candidate) => candidate === ref);
-        return index >= 0 ? (loan.evidenceIds || [])[index] : undefined;
-      }).filter((id): id is string => Boolean(id));
-      if (recourseEvidence.length) return result(check, "PASS", `Recourse language is expressly present in the controlling loan evidence: ${recourseEvidence[0].quote}.`, recourseEvidence, ids);
-      return result(check, "CANNOT_CONFIRM", "Recourse status is not expressly stated in the normalized loan evidence; Vera response should remain Not Provided unless an examiner locates supporting language.", loan.evidence, loan.evidenceIds || []);
-    }
+    case "RECOURSE_REVIEWED":
+      return result(check, "NOT_APPLICABLE", "Recourse status is reported as Not Provided unless expressly stated in the supplied packet; no recourse conclusion is inferred.");
 
     case "MATERIAL_REPORT_ERRORS_REVIEWED": {
       const reconciliation = titleSummaryReconciliation;
@@ -346,7 +339,7 @@ function profileCheck(
 }
 
 export function initialCanonicalQc(record: CanonicalTitleRecord, titleSummaryReconciliation: RunSheetReconciliation, runSheetReconciliation: RunSheetReconciliation): QcProfileResult {
-  const profile = profileForOrderType(record.orderType.value);
+  const profile = record.orderType.state === "CONFIRMED" ? profileForOrderType(record.orderType.value) : UNRESOLVED_QC_PROFILE;
   const checks = profile.checks.map((check) => profileCheck(check, record, titleSummaryReconciliation, runSheetReconciliation));
   return reduceQcChecks({ profileId: profile.id, profileVersion: profile.version, profileName: profile.name }, checks);
 }

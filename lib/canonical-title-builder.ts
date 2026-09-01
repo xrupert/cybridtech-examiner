@@ -15,8 +15,8 @@ function fact(raw: RawFact, ledger: TitleEvidenceLedger, basis: string): Evidenc
   const matchingNodes = mapped.ids.map((id) => ledger.evidence.find((node) => node.id === id)).filter(Boolean);
   let state: EvidenceState = "NOT_STATED";
   if (value) {
-    const strong = matchingNodes.some((node) => node && (node.nativeVerified || node.confidence >= 0.8));
-    state = strong ? "CONFIRMED" : "UNCONFIRMED";
+    const sourceVerified = matchingNodes.some((node) => node && node.nativeVerified);
+    state = sourceVerified ? "CONFIRMED" : "UNCONFIRMED";
   }
   return { value: value || "Needs review", state, evidence: mapped.refs, evidenceIds: mapped.ids, basis };
 }
@@ -39,6 +39,7 @@ function instrument(raw: RawInstrument, ledger: TitleEvidenceLedger, index: numb
     sourcePages: [...new Set(mapped.refs.map((item) => item.page))].sort((a, b) => a - b),
     evidence: mapped.refs,
     evidenceIds: mapped.ids,
+    evidenceState: mapped.ids.some((id) => ledger.evidence.find((node) => node.id === id)?.nativeVerified) ? "CONFIRMED" : mapped.ids.length ? "UNCONFIRMED" : "NOT_STATED",
   };
 }
 
@@ -82,20 +83,25 @@ function sameInstrument(a: string, b: string): boolean {
   return Boolean(left && left === right);
 }
 
+function verifiedEvidence(ledger: TitleEvidenceLedger, ids: string[] | undefined): boolean {
+  if (!ids?.length) return false;
+  return ids.some((id) => ledger.evidence.find((node) => node.id === id)?.nativeVerified);
+}
+
 function summaryAmount(raw: RawTitlePacketExtraction, instrumentNumber: string, ledger: TitleEvidenceLedger): EvidenceValue | null {
   const entry = raw.runSheet.entries.find((candidate) => sameInstrument(candidate.instrumentNumber, instrumentNumber) && clean(candidate.amount));
   if (!entry) return null;
   const mapped = evidenceRefsForAnchors(ledger, entry.evidence || []);
   return {
     value: clean(entry.amount) || "Needs review",
-    state: mapped.refs.length ? "CONFIRMED" : "UNCONFIRMED",
+    state: verifiedEvidence(ledger, mapped.ids) ? "CONFIRMED" : "UNCONFIRMED",
     evidence: mapped.refs,
     evidenceIds: mapped.ids,
     basis: "Lien amount developed from matching title-summary entry because the normalized source instrument amount was unavailable",
   };
 }
 
-function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacketExtraction, ledger: TitleEvidenceLedger, lienStack: CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"]) {
+function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacketExtraction, ledger: TitleEvidenceLedger, lienStack: CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"], allowAutomaticTarget: boolean) {
   const mortgageIdentityIds = new Set(lienStack.filter((entry) => isSecurityLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentId));
   const mortgages = recordInstruments.filter((item) => mortgageIdentityIds.has(item.id));
   const mortgageEntries = lienStack.filter((entry) => mortgageIdentityIds.has(entry.instrumentId));
@@ -111,7 +117,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     if (selected) selectionBasis = "Matched explicit target-lien hint to normalized security-lien identity";
   }
 
-  if (!selected) {
+  if (!selected && allowAutomaticTarget) {
     const automaticId = automaticTargetSecurityLienId(lienStack, summaryMortgageNumbers);
     selected = automaticId ? mortgages.find((item) => item.id === automaticId) : undefined;
     if (selected) {
@@ -125,7 +131,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
   const beneficiary = selected?.parties.find((party) => /beneficiary|holder|mortgagee|lender/i.test(party.role));
   const selectedEvidence: EvidenceValue = selected ? {
     value: selected.instrumentNumber,
-    state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
+    state: verifiedEvidence(ledger, selected.evidenceIds) ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
     basis: selectionBasis,
@@ -133,7 +139,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
 
   const sourceAmount: EvidenceValue | null = selected && selected.amount !== "Needs review" ? {
     value: selected.amount,
-    state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",
+    state: verifiedEvidence(ledger, selected.evidenceIds) ? "CONFIRMED" : "UNCONFIRMED",
     evidence: selected.evidence,
     evidenceIds: selected.evidenceIds,
     basis: "Recorded lien amount from selected/automatically developed target security instrument",
@@ -153,13 +159,13 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
   };
 
   const unresolvedMortgageIdentityExists = mortgageEntries.some((entry) => entry.status === "UNKNOWN");
-  const selectionRequired = !selected && (openMortgageEntries.length > 0 || unresolvedMortgageIdentityExists);
+  const selectionRequired = allowAutomaticTarget && !selected && (openMortgageEntries.length > 0 || unresolvedMortgageIdentityExists);
 
   return {
     instrumentId: selected?.id || null,
     instrumentNumber: selectedEvidence,
     amount,
-    beneficiary: selected && beneficiary ? { value: beneficiary.name, state: "CONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
+    beneficiary: selected && beneficiary ? { value: beneficiary.name, state: verifiedEvidence(ledger, beneficiary.evidenceIds) ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" } : { value: "Needs review", state: "NOT_STATED" as const, evidence: [], evidenceIds: [], basis: "Target lien beneficiary not resolved" },
     position,
     positionBasis: useExplicit ? "EXPLICIT" as const : firstInTime.basis,
     positionConfidence: useExplicit ? "high" as const : firstInTime.confidence,
@@ -193,7 +199,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   const { extraction: raw, ledger } = args;
   const instruments = (raw.instruments || []).map((item, index) => instrument(item, ledger, index));
   const summaryMapped = evidenceRefsForAnchors(ledger, raw.runSheet.evidence || []);
-  const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\b(run sheet|abstractor sheet|abstractor)\b/i.test(`${item.documentType} ${item.quote}`));
+  const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\b(run sheet|abstractor sheet)\b/i.test(`${item.documentType} ${item.quote}`));
   const summaryEntries = (raw.runSheet.entries || []).map((item, index) => summaryEntry(item, ledger, index, "summary"));
   const titleSummary: RunSheetSummary = {
     detected: Boolean(raw.runSheet.detected),
@@ -227,11 +233,13 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   const assignments = instruments.filter((item) => typeIs(item.type, /assignment/));
   const releases = instruments.filter((item) => typeIs(item.type, /release|satisfaction|reconveyance|discharge/));
   const titleSummaryLienNumbers = raw.runSheet.entries.filter((entry) => isLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentNumber);
-  const lienStack = buildLienStack(instruments, releases, { titleSummaryOpenInstrumentNumbers: titleSummaryLienNumbers });
+  const verifiedInstrumentIds = instruments.filter((item) => item.evidenceState === "CONFIRMED").map((item) => item.id);
+  const lienStack = buildLienStack(instruments, releases, { titleSummaryOpenInstrumentNumbers: titleSummaryLienNumbers, verifiedInstrumentIds });
   const lienIdentityIds = new Set(lienStack.map((entry) => entry.instrumentId));
   const mortgages = instruments.filter((item) => lienIdentityIds.has(item.id) && isSecurityLienIdentityType(item.type));
   const liens = instruments.filter((item) => lienIdentityIds.has(item.id) && !isSecurityLienIdentityType(item.type));
-  const developedTarget = targetLien(instruments, raw, ledger, lienStack);
+  const foreclosureMode = orderType.state === "CONFIRMED" && /^foreclosure$/i.test(orderType.value);
+  const developedTarget = targetLien(instruments, raw, ledger, lienStack, foreclosureMode);
   const { _selectedStackStatus: _selectedStackStatusIgnored, ...targetLienRecord } = developedTarget;
   const foreclosureAnalysis = buildForeclosureAnalysis({
     lienStack,
@@ -241,6 +249,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
     targetPositionBasis: targetLienRecord.positionBasis,
     targetPositionConfidence: targetLienRecord.positionConfidence,
     selectionRequired: targetLienRecord.selectionRequired,
+    requireTarget: foreclosureMode,
   });
 
   const record: CanonicalTitleRecord = {

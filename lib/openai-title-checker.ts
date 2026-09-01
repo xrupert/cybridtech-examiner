@@ -89,7 +89,7 @@ ${unresolved.map((check) => `- ${check.id}: ${check.label}\n  Current reason: ${
 function strongEvidence(ledger: TitleEvidenceLedger, ids: string[]): boolean {
   if (!ids.length || !validateEvidenceIds(ledger, ids)) return false;
   const nodes = ids.map((id) => ledger.evidence.find((node) => node.id === id)).filter(Boolean);
-  return nodes.length > 0 && nodes.every((node) => node && (node.source !== "native" ? node.confidence >= 0.7 : node.nativeVerified));
+  return nodes.length > 0 && nodes.every((node) => node && node.nativeVerified);
 }
 
 export async function resolveSemanticChecks(record: CanonicalTitleRecord, initial: QcProfileResult, ledger: TitleEvidenceLedger): Promise<{ resolutions: CheckerResolution[]; model: string; modelMs: number }> {

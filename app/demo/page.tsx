@@ -12,7 +12,8 @@ import {
   validateExportProfile,
   type ExportColumn,
 } from "@/lib/export-profiles";
-import { reduceQcChecks } from "@/lib/title-qc-engine";
+import { applyReviewDecisions } from "@/lib/review-decision-reducer";
+import type { ReviewDecisionRecord } from "@/lib/review-decisions";
 import { buildVeraAccuracyAudit, veraPassFailReason } from "@/lib/vera-accuracy-audit";
 import type { QcCheckResult, QcStatus, TitleReviewResult } from "@/lib/title-domain";
 import { Logo } from "../components/Logo";
@@ -24,7 +25,7 @@ type ItemStatus = "queued" | "processing" | "complete" | "error";
 type Readiness = { openAIConfigured: boolean; largeFileStorageConfigured: boolean; authenticationMode?: string; engine?: string; extractionModel?: string; checkModel?: string; pipeline?: string[]; };
 type BatchItem = { id: string; manifestItemId: string; fileName: string; status: ItemStatus; review?: TitleReviewResult; error?: string; };
 type BatchManifest = { batchId: string; items: Array<{ itemId: string; sourceFile: string }>; };
-type DecisionRecord = SavedDecision & { decidedAt?: string };
+type DecisionRecord = SavedDecision & { reviewId?: string; actor?: string; decidedAt?: string };
 type DecisionMap = Record<string, Record<string, DecisionRecord>>;
 
 function safeName(value: string) { return (value || "cybrid-title").replace(/\.[^/.]+$/, "").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "") || "cybrid-title"; }
@@ -35,6 +36,7 @@ function statusClass(value: string) { if (value === "CLEAR" || value === "PASS" 
 function auditStatusClass(value: string) { if (["ACCURATE", "COMPLETE", "PRESENT", "NONE"].includes(value)) return statusClass("PASS"); if (value === "DISCREPANCIES") return statusClass("FAIL"); return statusClass("CANNOT_CONFIRM"); }
 function veraChecks(review?: TitleReviewResult): QcCheckResult[] { return [...(review?.qc.checks.filter((check) => check.legacyQuestionNumber) || [])].sort((a, b) => (a.legacyQuestionNumber || 0) - (b.legacyQuestionNumber || 0)); }
 function supplementalChecks(review?: TitleReviewResult): QcCheckResult[] { return review?.qc.checks.filter((check) => !check.legacyQuestionNumber) || []; }
+function isForeclosureReview(review?: TitleReviewResult): boolean { return Boolean(review && review.record.orderType.state === "CONFIRMED" && /^foreclosure$/i.test(review.record.orderType.value)); }
 
 export default function DemoPage() {
   const [clientName, setClientName] = useState("McCalla");
@@ -100,9 +102,23 @@ export default function DemoPage() {
     try {
       const response = await fetch(`/api/review-decisions?reviewId=${encodeURIComponent(reviewId)}`);
       if (!response.ok) return;
-      const manifest = await response.json() as { decisions?: Array<DecisionRecord & { checkId: string }> };
-      const mapped = Object.fromEntries((manifest.decisions || []).map((decision) => [decision.checkId, decision]));
+      const manifest = await response.json() as { decisions?: DecisionRecord[] };
+      const records = manifest.decisions || [];
+      const mapped = Object.fromEntries(records.map((decision) => [decision.checkId, decision]));
       setDecisions((current) => ({ ...current, [reviewId]: mapped }));
+      const reducerDecisions: ReviewDecisionRecord[] = records.map((decision) => ({
+        reviewId,
+        checkId: decision.checkId,
+        decision: decision.decision,
+        correctedStatus: decision.correctedStatus,
+        correctedValue: decision.correctedValue,
+        reason: decision.reason,
+        actor: decision.actor || "examiner",
+        decidedAt: decision.decidedAt || new Date().toISOString(),
+      }));
+      setItems((current) => current.map((item) => item.review?.record.reviewId === reviewId
+        ? { ...item, review: applyReviewDecisions(item.review, reducerDecisions) }
+        : item));
     } catch { /* review remains usable */ }
   }
 
@@ -137,47 +153,24 @@ export default function DemoPage() {
     setItems((current) => current.map((item) => item.id === id && item.review ? { ...item, review: updater(item.review) } : item));
   }
 
-  function selectTargetLien(item: BatchItem, instrumentId: string) {
+  async function selectTargetLien(item: BatchItem, instrumentId: string) {
     if (!item.review) return;
-    patchReview(item.id, (review) => {
-      const mortgage = review.record.mortgages.find((candidate) => candidate.id === instrumentId); if (!mortgage) return review;
-      const stackEntry = review.record.foreclosureAnalysis.lienStack.find((entry) => entry.instrumentId === instrumentId);
-      const beneficiary = mortgage.parties.find((party) => /holder|beneficiary|mortgagee|lender/i.test(party.role))?.name || "Needs review";
-      const confirmed = mortgage.evidence.length ? "CONFIRMED" as const : "UNCONFIRMED" as const;
-      const positionValue = stackEntry?.positionLabel || "Needs review";
-      const positionState = positionValue === "Needs review" ? "NOT_STATED" as const : stackEntry?.priorityConfidence === "high" ? "CONFIRMED" as const : "UNCONFIRMED" as const;
-      const seniorLienIds = stackEntry?.chronologicalPosition ? review.record.foreclosureAnalysis.lienStack.filter((entry) => entry.status === "OPEN" && entry.chronologicalPosition != null && entry.chronologicalPosition < stackEntry.chronologicalPosition!).map((entry) => entry.instrumentId) : [];
-      const juniorLienIds = stackEntry?.chronologicalPosition ? review.record.foreclosureAnalysis.lienStack.filter((entry) => entry.status === "OPEN" && entry.chronologicalPosition != null && entry.chronologicalPosition > stackEntry.chronologicalPosition!).map((entry) => entry.instrumentId) : [];
-      const remainingRequirements = review.record.foreclosureAnalysis.requirements.filter((requirement) => !["TARGET_LIEN_SELECTION", "TARGET_LIEN_AMOUNT", "TARGET_LIEN_POSITION"].includes(requirement.code));
-      const operationalRequirements = remainingRequirements.filter((requirement) => requirement.severity !== "INFO");
-      const analysisStatus = mortgage.amount === "Needs review" || positionValue === "Needs review" ? "CURATIVE_REQUIRED" as const : operationalRequirements.length ? "REVIEW" as const : "READY" as const;
-      const record = {
-        ...review.record,
-        targetLien: {
-          ...review.record.targetLien,
-          instrumentId: mortgage.id,
-          instrumentNumber: { value: mortgage.instrumentNumber, state: confirmed, evidence: mortgage.evidence, evidenceIds: mortgage.evidenceIds, basis: "Examiner selected target lien as ambiguity override" },
-          amount: { value: mortgage.amount, state: mortgage.amount === "Needs review" ? "NOT_STATED" as const : confirmed, evidence: mortgage.evidence, evidenceIds: mortgage.evidenceIds, basis: "Amount from examiner-selected target lien" },
-          beneficiary: { value: beneficiary, state: beneficiary === "Needs review" ? "NOT_STATED" as const : confirmed, evidence: mortgage.evidence, evidenceIds: mortgage.evidenceIds, basis: "Beneficiary/holder on examiner-selected target lien" },
-          position: { value: positionValue, state: positionState, evidence: stackEntry?.evidence || mortgage.evidence, evidenceIds: stackEntry?.evidenceIds || mortgage.evidenceIds, basis: positionValue === "Needs review" ? "Position unresolved" : `Developed from lien stack using ${stackEntry?.priorityBasis || "UNRESOLVED"}` },
-          positionBasis: stackEntry?.priorityBasis || "UNRESOLVED",
-          positionConfidence: stackEntry?.priorityConfidence || "low",
-          selectionRequired: false,
-        },
-        foreclosureAnalysis: { ...review.record.foreclosureAnalysis, targetInstrumentId: mortgage.id, targetAmount: mortgage.amount, targetPosition: positionValue, targetPositionBasis: stackEntry?.priorityBasis || "UNRESOLVED", targetPositionConfidence: stackEntry?.priorityConfidence || "low", seniorLienIds, juniorLienIds, requirements: remainingRequirements, status: analysisStatus },
-      };
-      return { ...review, record };
-    });
-  }
-
-  function setLienPosition(item: BatchItem, value: string) {
-    if (!item.review) return;
-    patchReview(item.id, (review) => {
-      const normalized = value.trim() || "Needs review";
-      const record = { ...review.record, targetLien: { ...review.record.targetLien, position: { value: normalized, state: normalized === "Needs review" ? "NOT_STATED" as const : "CONFIRMED" as const, evidence: review.record.targetLien.position.evidence, evidenceIds: review.record.targetLien.position.evidenceIds, basis: normalized === "Needs review" ? "Lien position unresolved" : "Examiner-confirmed lien position override" }, positionBasis: normalized === "Needs review" ? "UNRESOLVED" as const : "EXPLICIT" as const, positionConfidence: normalized === "Needs review" ? "low" as const : "high" as const }, foreclosureAnalysis: { ...review.record.foreclosureAnalysis, targetPosition: normalized, targetPositionBasis: normalized === "Needs review" ? "UNRESOLVED" as const : "EXPLICIT" as const, targetPositionConfidence: normalized === "Needs review" ? "low" as const : "high" as const } };
-      const checks = review.qc.checks.map((check) => check.id === "TARGET_LIEN_POSITION_ESTABLISHED" ? { ...check, status: normalized === "Needs review" ? "CANNOT_CONFIRM" as const : "PASS" as const, summary: normalized === "Needs review" ? "Lien position remains unresolved." : `Target lien position confirmed by examiner as ${normalized}.` } : check);
-      return { ...review, record, qc: reduceQcChecks(review.qc, checks) };
-    });
+    const mortgage = item.review.record.mortgages.find((candidate) => candidate.id === instrumentId);
+    if (!mortgage) return;
+    const reason = `Examiner selected ${mortgage.instrumentNumber} as the foreclosure target after reviewing the competing security interests.`;
+    try {
+      setError("");
+      const response = await fetch("/api/review-decisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: "TARGET_LIEN_FOUND", decision: "CORRECT", correctedStatus: "PASS", correctedValue: mortgage.instrumentNumber, reason }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || "Could not save target-lien decision.");
+      applySavedDecision(item, { checkId: "TARGET_LIEN_FOUND", decision: "CORRECT", correctedStatus: "PASS", correctedValue: mortgage.instrumentNumber, reason });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save target-lien decision.");
+    }
   }
 
   function decisionFor(item: BatchItem, checkId: string): DecisionRecord | undefined {
@@ -186,17 +179,19 @@ export default function DemoPage() {
 
   function applySavedDecision(item: BatchItem, saved: SavedDecision) {
     if (!item.review) return;
-    setDecisions((current) => ({ ...current, [item.review!.record.reviewId]: { ...(current[item.review!.record.reviewId] || {}), [saved.checkId]: saved } }));
-    if (saved.decision === "CONFIRM") return;
-    patchReview(item.id, (review) => {
-      const checks = review.qc.checks.map((candidate) => candidate.id === saved.checkId ? {
-        ...candidate,
-        status: saved.decision === "NEEDS_EVIDENCE" ? "CANNOT_CONFIRM" as const : saved.correctedStatus || candidate.status,
-        summary: saved.decision === "CORRECT" ? saved.correctedValue || candidate.summary : `${candidate.summary} Examiner requires additional evidence: ${saved.reason}`,
-        recommendedAction: saved.decision === "CORRECT" && (saved.correctedStatus === "PASS" || saved.correctedStatus === "NOT_APPLICABLE") ? "No curative action required after examiner correction." : candidate.recommendedAction,
-      } : candidate);
-      return { ...review, qc: reduceQcChecks(review.qc, checks) };
-    });
+    const decidedAt = new Date().toISOString();
+    setDecisions((current) => ({ ...current, [item.review!.record.reviewId]: { ...(current[item.review!.record.reviewId] || {}), [saved.checkId]: { ...saved, reviewId: item.review!.record.reviewId, actor: "examiner", decidedAt } } }));
+    const decision: ReviewDecisionRecord = {
+      reviewId: item.review.record.reviewId,
+      checkId: saved.checkId,
+      decision: saved.decision,
+      correctedStatus: saved.correctedStatus,
+      correctedValue: saved.correctedValue,
+      reason: saved.reason,
+      actor: "examiner",
+      decidedAt,
+    };
+    patchReview(item.id, (review) => applyReviewDecisions(review, [decision]));
   }
 
   async function confirmAllClean(item: BatchItem) {
@@ -245,11 +240,13 @@ export default function DemoPage() {
   const selectedReviewComplete = selected ? pendingVera(selected).length === 0 && pendingSupplemental(selected).length === 0 : false;
   const selectedAudit = selected?.review ? buildVeraAccuracyAudit(selected.review.record, selected.review.qc) : [];
   const selectedPassFail = selected?.review ? veraPassFailReason(selected.review.qc) : null;
+  const selectedIsForeclosure = isForeclosureReview(selected?.review);
 
   return <div className={styles.shell}>
-    <header className={styles.nav}><div className={styles.brand}><Logo height={32} /><span className={styles.brandName}>CYBRID TITLE</span></div><span className={styles.navTag}>Title QC · Vera 20 · Lien Priority · Jurisdiction Curative</span></header>
+    <header className={styles.nav}><div className={styles.brand}><Logo height={40} /><span className={styles.brandName}>Cybrid Title</span></div><span className={styles.navTag}>Title Examination · Vera 20 · Evidence Reconciliation · Curative</span></header>
     <main className={styles.main}>
-      <section className={styles.hero}><div><p className={styles.eyebrow}>Canonical title intelligence workbench</p><h1>Review the title. Confirm the evidence. Know what must happen next.</h1></div><p>Cybrid performs the Vera 20 review, develops the lien stack, separates title defects from foreclosure-process actions, and requires an examiner disposition before a reviewed export is released.</p></section>
+      <div className={styles.printBrand}><div className={styles.printBrandIdentity}><Logo height={54} /><div><strong>Cybrid Title</strong><span>Evidence-backed Title Examination</span></div></div><div className={styles.printBrandMeta}>Examiner Review{selected?.review ? ` · ${selected.review.record.tsNumber.value}` : ""}</div></div>
+      <section className={styles.hero}><div><p className={styles.eyebrow}>Title examiner intelligence workbench</p><h1>Find the title truth. Verify the source. Resolve what prevents the next action.</h1></div><p>Cybrid prepares the Vera 20 examination, reconciles the report to the recorded source documents, develops lien identity and priority only when the order requires it, and turns unresolved findings into a clear examiner or curative work queue before export.</p></section>
 
       <section className={`${styles.panel} ${styles.setupPanel}`}><div className={styles.setup}>
         <label className={styles.field}>Client / export profile<input value={clientName} onChange={(event) => setClientName(event.target.value)} disabled={busy} /></label>
@@ -264,11 +261,11 @@ export default function DemoPage() {
       </section>
 
       {items.length ? <><section className={styles.metrics}><div className={styles.metric}><span>Batch</span><strong>{metrics.total}</strong></div><div className={`${styles.metric} ${styles.metricClear}`}><span>Clear</span><strong>{metrics.clear}</strong></div><div className={`${styles.metric} ${styles.metricCurative}`}><span>Curative</span><strong>{metrics.curative}</strong></div><div className={`${styles.metric} ${styles.metricReview}`}><span>Cannot confirm</span><strong>{metrics.review}</strong></div><div className={styles.metric}><span>QC deficiency</span><strong>{metrics.qc}</strong></div></section>
-        <section className={styles.panel}><div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Click the order number to complete examiner review. “Reviewed” and “Clear/Pass” are intentionally separate states.</p></div></div><div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Order Profile</th><th>Borrower</th><th>Property</th><th>Target Lien</th><th>Lien Amount</th><th>Lien Position</th><th>Priority Basis</th><th>Foreclosure</th><th>QC</th><th>Source</th></tr></thead><tbody>
-          {items.map((item) => item.review ? <tr key={item.id}><td><button className={styles.rowButton} onClick={() => setSelectedId(item.id)}>{item.review.record.tsNumber.value}</button></td><td>{item.review.qc.profileName}</td><td>{item.review.record.borrower.value}</td><td>{item.review.record.propertyAddress.value}</td>
-            <td>{item.review.record.targetLien.selectionRequired ? <select className={styles.editInput} value="" onChange={(event) => selectTargetLien(item, event.target.value)}><option value="">Resolve ambiguity…</option>{item.review.record.mortgages.map((mortgage) => <option value={mortgage.id} key={mortgage.id}>{mortgage.instrumentNumber} · {mortgage.amount}</option>)}</select> : item.review.record.targetLien.instrumentNumber.value}</td>
-            <td>{item.review.record.targetLien.amount.value}</td><td><input className={styles.editInput} value={item.review.record.targetLien.position.value === "Needs review" ? "" : item.review.record.targetLien.position.value} placeholder="Needs review" onChange={(event) => setLienPosition(item, event.target.value)} /></td>
-            <td>{item.review.record.targetLien.positionBasis.replaceAll("_", " ")} · {item.review.record.targetLien.positionConfidence}</td><td><span className={statusClass(item.review.record.foreclosureAnalysis.status)}>{item.review.record.foreclosureAnalysis.status.replaceAll("_", " ")}</span></td><td><span className={statusClass(item.review.qc.qcStatus)}>{item.review.qc.qcStatus}</span></td><td>{item.fileName}</td></tr> : <tr key={item.id}><td colSpan={11}>{item.fileName} — <span className={item.status === "error" ? `${styles.status} ${styles.error}` : `${styles.status} ${styles.review}`}>{item.status.toUpperCase()}</span>{item.error ? ` · ${item.error}` : ""}</td></tr>)}
+        <section className={styles.panel}><div className={styles.sectionTitle}><div><h2>Batch results</h2><p>Click the order number to complete examiner review. “Reviewed” and “Clear/Pass” are intentionally separate states.</p></div></div><div className={styles.tableWrap}><table className={styles.table}><thead><tr><th>TS / Order #</th><th>Order Profile</th><th>Owner / Borrower</th><th>Property</th><th>Target Lien</th><th>Lien Amount</th><th>Lien Position</th><th>Priority Basis</th><th>Workflow</th><th>QC</th><th>Source</th></tr></thead><tbody>
+          {items.map((item) => item.review ? <tr key={item.id}><td><button className={styles.rowButton} onClick={() => setSelectedId(item.id)}>{item.review.record.tsNumber.value}</button></td><td>{item.review.qc.profileName}</td><td>{isForeclosureReview(item.review) ? item.review.record.borrower.value : item.review.record.currentOwner.value}</td><td>{item.review.record.propertyAddress.value}</td>
+            <td>{isForeclosureReview(item.review) ? (item.review.record.targetLien.selectionRequired ? <select className={styles.editInput} value="" onChange={(event) => void selectTargetLien(item, event.target.value)}><option value="">Resolve target ambiguity…</option>{item.review.record.mortgages.map((mortgage) => <option value={mortgage.id} key={mortgage.id}>{mortgage.instrumentNumber} · {mortgage.amount}</option>)}</select> : item.review.record.targetLien.instrumentNumber.value) : "—"}</td>
+            <td>{isForeclosureReview(item.review) ? item.review.record.targetLien.amount.value : "—"}</td><td>{isForeclosureReview(item.review) ? item.review.record.targetLien.position.value : "—"}</td>
+            <td>{isForeclosureReview(item.review) ? `${item.review.record.targetLien.positionBasis.replaceAll("_", " ")} · ${item.review.record.targetLien.positionConfidence}` : "—"}</td><td>{isForeclosureReview(item.review) ? <span className={statusClass(item.review.record.foreclosureAnalysis.status)}>{item.review.record.foreclosureAnalysis.status.replaceAll("_", " ")}</span> : <span className={statusClass("PASS")}>TITLE REVIEW</span>}</td><td><span className={statusClass(item.review.qc.qcStatus)}>{item.review.qc.qcStatus}</span></td><td>{item.fileName}</td></tr> : <tr key={item.id}><td colSpan={11}>{item.fileName} — <span className={item.status === "error" ? `${styles.status} ${styles.error}` : `${styles.status} ${styles.review}`}>{item.status.toUpperCase()}</span>{item.error ? ` · ${item.error}` : ""}</td></tr>)}
         </tbody></table></div></section></> : null}
 
       {selected?.review ? <>
@@ -277,15 +274,15 @@ export default function DemoPage() {
           <div className={styles.detailGrid}><div className={styles.summaryCard}><dl>
             <dt>Order type</dt><dd>{selected.review.record.orderType.value}</dd><dt>Borrower</dt><dd>{selected.review.record.borrower.value}</dd><dt>Current owner</dt><dd>{selected.review.record.currentOwner.value}</dd><dt>Property</dt><dd>{selected.review.record.propertyAddress.value}</dd><dt>State / County</dt><dd>{selected.review.record.state.value} / {selected.review.record.county.value}</dd>
             <dt>RCS report run sheet</dt><dd>{selected.review.record.titleSummary.detected ? `${selected.review.record.titleSummary.entries.length} material entries · pp. ${selected.review.record.titleSummary.pageStart ?? "?"}–${selected.review.record.titleSummary.pageEnd ?? "?"}` : "Could not segment"}</dd><dt>Separate Abstractor Sheet</dt><dd>{selected.review.record.runSheet.detected ? "Detected" : "Not supplied"}</dd>
-            <dt>Target lien</dt><dd>{selected.review.record.targetLien.instrumentNumber.value}</dd><dt>Lien amount</dt><dd>{selected.review.record.targetLien.amount.value}</dd><dt>Lien position</dt><dd>{selected.review.record.targetLien.position.value}</dd><dt>Position basis</dt><dd>{selected.review.record.targetLien.positionBasis.replaceAll("_", " ")} · {selected.review.record.targetLien.positionConfidence}</dd><dt>Open liens</dt><dd>{selected.review.record.foreclosureAnalysis.openLienCount}</dd><dt>QC profile</dt><dd>{selected.review.qc.profileName} v{selected.review.qc.profileVersion}</dd>
+            <dt>Target lien</dt><dd>{selectedIsForeclosure ? selected.review.record.targetLien.instrumentNumber.value : "Not applicable to this order"}</dd><dt>Lien amount</dt><dd>{selectedIsForeclosure ? selected.review.record.targetLien.amount.value : "—"}</dd><dt>Lien position</dt><dd>{selectedIsForeclosure ? selected.review.record.targetLien.position.value : "—"}</dd><dt>Position basis</dt><dd>{selectedIsForeclosure ? `${selected.review.record.targetLien.positionBasis.replaceAll("_", " ")} · ${selected.review.record.targetLien.positionConfidence}` : "—"}</dd><dt>Open lien identities</dt><dd>{selected.review.record.foreclosureAnalysis.openLienCount}</dd><dt>QC profile</dt><dd>{selected.review.qc.profileName} v{selected.review.qc.profileVersion}</dd>
             <dt>Vera review</dt><dd>{selectedVeraReviewed}/{selectedVera.length || 20} dispositioned</dd>
           </dl>
           {selected.review.record.foreclosureAnalysis.jurisdictionCoverage ? <div className={styles.notice} style={{ marginTop: 14, marginBottom: 0 }}><b>Jurisdiction coverage: {selected.review.record.foreclosureAnalysis.jurisdictionCoverage.status}</b><br />{selected.review.record.foreclosureAnalysis.jurisdictionCoverage.state} · {selected.review.record.foreclosureAnalysis.jurisdictionCoverage.county}<br />{selected.review.record.foreclosureAnalysis.jurisdictionCoverage.note}</div> : null}
           <div className={styles.curativeList} style={{ marginTop: 14 }}><b>Developed lien stack</b>{selected.review.record.foreclosureAnalysis.lienStack.map((entry) => <span className={styles.curativeItem} key={entry.instrumentId}><b>{entry.positionLabel}</b> · {entry.status} · {entry.instrumentType} · {entry.instrumentNumber} · {entry.amount} · {entry.recordingDate}{entry.priorityWarning ? ` · REVIEW: ${entry.priorityWarning}` : ""}</span>)}</div>
           </div>
           <div>
-            <div className={styles.sectionTitle}><div><h2>Foreclosure cure / action</h2><p>Title defects and future foreclosure-process requirements are labeled separately.</p></div></div>
-            {selected.review.record.foreclosureAnalysis.requirements.length ? <div className={styles.issues}>{selected.review.record.foreclosureAnalysis.requirements.map((requirement) => <div className={styles.issue} key={requirement.code}><div className={styles.issueTop}><div><h3>{requirement.title}</h3><p>{requirement.action}</p></div><span className={statusClass(requirement.severity === "BLOCKING" ? "FAIL" : requirement.severity === "INFO" ? "PASS" : "CANNOT_CONFIRM")}>{requirement.scope?.replaceAll("_", " ") || requirement.type}</span></div>{requirement.jurisdiction || requirement.authority ? <div className={styles.profileNote} style={{ marginTop: 8 }}>{requirement.jurisdiction || ""}{requirement.authority ? <> · <a href={requirement.authorityUrl} target="_blank" rel="noreferrer">{requirement.authority}</a></> : null}{requirement.ruleVersion ? ` · ${requirement.ruleVersion}` : ""}</div> : null}</div>)}</div> : <div className={styles.notice}>No title-package cure or jurisdictional foreclosure action was identified from the current evidence and loaded rule set.</div>}
+            <div className={styles.sectionTitle}><div><h2>{selectedIsForeclosure ? "Foreclosure cure / action" : "Title exceptions / examiner action"}</h2><p>{selectedIsForeclosure ? "Title-package cure and future foreclosure-process requirements are separated so counsel knows what blocks the file now versus what comes later." : "This order is being treated as a title examination. Foreclosure target and sale-process requirements are not invented unless the order is actually Foreclosure."}</p></div></div>
+            {selected.review.record.foreclosureAnalysis.requirements.length ? <div className={styles.issues}>{selected.review.record.foreclosureAnalysis.requirements.map((requirement) => <div className={styles.issue} key={requirement.code}><div className={styles.issueTop}><div><h3>{requirement.title}</h3><p>{requirement.action}</p></div><span className={statusClass(requirement.severity === "BLOCKING" ? "FAIL" : requirement.severity === "INFO" ? "PASS" : "CANNOT_CONFIRM")}>{requirement.scope?.replaceAll("_", " ") || requirement.type}</span></div>{requirement.jurisdiction || requirement.authority ? <div className={styles.profileNote} style={{ marginTop: 8 }}>{requirement.jurisdiction || ""}{requirement.authority ? <> · <a href={requirement.authorityUrl} target="_blank" rel="noreferrer">{requirement.authority}</a></> : null}{requirement.ruleVersion ? ` · ${requirement.ruleVersion}` : ""}</div> : null}</div>)}</div> : <div className={styles.notice}>{selectedIsForeclosure ? "No title-package cure or jurisdictional foreclosure action was identified from the current evidence and loaded rule set." : "No unresolved title-package action was identified from the current evidence and applicable order profile."}</div>}
           </div></div>
         </section>
 

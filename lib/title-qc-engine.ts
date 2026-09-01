@@ -7,6 +7,7 @@ export function issueMetadata(id: ProfileCheckId): { code: string; severity: Cur
     case "PRIOR_OWNER_ESTABLISHED": return { code: "PRIOR_OWNER_UNRESOLVED", severity: "BLOCKING", action: "Establish the qualifying prior-owner/full-value conveyance required by the selected order profile." };
     case "OWNERSHIP_CHAIN_COMPLETE": return { code: "OWNERSHIP_CHAIN_GAP", severity: "BLOCKING", action: "Establish the ownership-chain or concurrent-PMM evidence required by the selected order profile." };
     case "TARGET_LIEN_FOUND": return { code: "TARGET_LIEN_UNRESOLVED", severity: "BLOCKING", action: "Identify the exact lien being foreclosed and its recorded instrument." };
+    case "TARGET_LIEN_AMOUNT": return { code: "TARGET_LIEN_AMOUNT_UNRESOLVED", severity: "BLOCKING", action: "Confirm the foreclosure target lien amount from the controlling recorded security instrument." };
     case "TARGET_LIEN_POSITION_ESTABLISHED": return { code: "LIEN_POSITION_UNRESOLVED", severity: "BLOCKING", action: "Confirm the foreclosure lien position from title evidence; do not infer position from document order." };
     case "HOA_STATUS_REVIEWED": return { code: "HOA_STATUS_UNRESOLVED", severity: "REVIEW", action: "Confirm whether an HOA/condominium regime applies from the title report and supporting association/recorded evidence." };
     case "CCRS_REVIEWED": return { code: "CCRS_UNRESOLVED", severity: "REVIEW", action: "Confirm the applicable declaration, covenants, conditions, and restrictions or document why they are not applicable." };
