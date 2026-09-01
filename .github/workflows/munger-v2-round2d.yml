@@ -1,0 +1,55 @@
+name: Munger v2 round 2d
+
+on:
+  push:
+    branches:
+      - audit/munger-inversion-v2
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[munger-v2-round2d-fixed]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/munger-inversion-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply vetted transformation and Current Owner truth test
+        shell: python
+        run: |
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/munger-v2-round2c.yml').read_text()
+          start_marker = '      - name: Apply the vetted round-two transformation\n        shell: python\n        run: |\n'
+          end_marker = '\n      - name: Install dependencies'
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          exec(compile(textwrap.dedent(workflow[start:end]), 'round2c-transform.py', 'exec'), {})
+
+          p = Path('scripts/architecture-harness-v4.ts')
+          text = p.read_text()
+          old = '  assert.equal(qc.checks.filter((check) => check.legacyQuestionNumber).length, 20); assert.equal(record.targetLien.amount.value, "$80,000"); assert.equal(record.targetLien.position.value, "1st Lien");'
+          new = '  assert.equal(qc.checks.filter((check) => check.legacyQuestionNumber).length, 20); assert.equal(record.targetLien.instrumentId, null); assert.equal(record.targetLien.selectionRequired, false); assert.equal(record.targetLien.amount.value, "Needs review"); assert.equal(record.targetLien.position.value, "Needs review"); assert.equal(record.foreclosureAnalysis.requirements.some((item) => item.scope === "FORECLOSURE_PROCESS"), false);'
+          if old not in text:
+              raise SystemExit('Current Owner target expectation marker missing')
+          p.write_text(text.replace(old, new, 1))
+
+      - name: Install dependencies
+        run: npm install
+      - name: Verify repaired branch
+        run: npm run ci
+      - name: Commit verified repairs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib scripts
+          if git diff --cached --quiet; then echo "No source diff"; exit 0; fi
+          git commit -m "[munger-v2-round2d-fixed] Separate title review from foreclosure truth"
+          git push origin HEAD:audit/munger-inversion-v2
