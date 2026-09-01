@@ -6,13 +6,16 @@ import { profileForOrderType } from "../lib/qc-profiles";
 import { reconcileTitleSummary } from "../lib/run-sheet-reconciler";
 import { createExportProfile, MCCALLA_EXPORT_PROFILE, validateExportProfile } from "../lib/export-profiles";
 
+let failures = 0;
+
 function check(name: string, fn: () => void) {
   try {
     fn();
     console.log(`MUNGER PASS: ${name}`);
   } catch (error) {
+    failures += 1;
     console.error(`MUNGER FAIL: ${name}`);
-    throw error;
+    console.error(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -121,4 +124,5 @@ check("McCalla required columns cannot be removed by customization", () => {
   for (const key of requiredKeys) assert.ok(custom.columns.some((column) => column.key === key));
 });
 
-console.log("MUNGER INVERSION HARNESS COMPLETE");
+if (failures) throw new Error(`MUNGER INVERSION HARNESS FAILED: ${failures} failure(s).`);
+console.log("MUNGER INVERSION HARNESS COMPLETE: all inversion checks passed.");
