@@ -53,6 +53,7 @@ export async function saveReviewDecision(input: Omit<ReviewDecisionRecord, "deci
   await put(path(input.reviewId), JSON.stringify(manifest), {
     access: "private",
     addRandomSuffix: false,
+    allowOverwrite: true,
     contentType: "application/json",
   });
   return manifest;

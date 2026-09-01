@@ -1,10 +1,10 @@
 {
   "name": "cybridtech-examiner",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "verify": "tsx scripts/architecture-harness.ts && tsx scripts/lien-intelligence-harness.ts",
+    "verify": "tsx scripts/architecture-harness-v4.ts && tsx scripts/lien-intelligence-harness.ts && tsx scripts/one-owner-fallback-harness.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run verify && next build",
     "ci": "npm run verify && npm run typecheck && next build",

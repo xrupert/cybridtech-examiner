@@ -101,6 +101,19 @@ export interface ForeclosureRequirement {
   action: string;
   evidence: EvidenceRef[];
   evidenceIds?: string[];
+  scope?: "TITLE_PACKAGE" | "FORECLOSURE_PROCESS";
+  jurisdiction?: string;
+  authority?: string;
+  authorityUrl?: string;
+  ruleVersion?: string;
+}
+
+export interface JurisdictionCoverage {
+  state: string;
+  county: string;
+  status: "CURATED" | "GENERAL_ONLY" | "UNAVAILABLE";
+  ruleSetVersion: string;
+  note: string;
 }
 
 export interface ForeclosureAnalysis {
@@ -116,6 +129,7 @@ export interface ForeclosureAnalysis {
   openLienCount: number;
   lienStack: CanonicalLienStackEntry[];
   requirements: ForeclosureRequirement[];
+  jurisdictionCoverage?: JurisdictionCoverage;
 }
 
 export interface CanonicalTitleRecord {
@@ -136,9 +150,9 @@ export interface CanonicalTitleRecord {
   legalDescription: EvidenceValue;
   borrower: EvidenceValue;
   currentOwner: EvidenceValue;
-  /** Opening title-report/title-search summary used for report-to-source reconciliation. */
+  /** Opening title-report/title-search summary used for report-to-source reconciliation and, for RCS Exceptions-style reports, the applicable report run sheet. */
   titleSummary: RunSheetSummary;
-  /** A distinct supplied Run Sheet or Abstractor Sheet only. A title report is never promoted to this field. */
+  /** A distinct supplied Run Sheet or Abstractor Sheet only; it remains separate from the RCS title-report Exceptions summary. */
   runSheet: RunSheetSummary;
   instruments: CanonicalInstrument[];
   mortgages: CanonicalInstrument[];
