@@ -1,0 +1,124 @@
+name: Munger v2 truth-chain repair
+
+on:
+  push:
+    branches:
+      - audit/munger-inversion-v2
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[munger-v2-fixed]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/munger-inversion-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply fail-closed truth-chain repairs
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"Expected fragment missing in {path}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # 1) A conveyance deed caption containing “vendor's lien” is not a second lien identity.
+          replace_once(
+              "lib/lien-stack.ts",
+              "const DERIVATIVE_LIEN_EVENT_PATTERN = /assignment|modification|amendment|extension|renewal|subordination agreement|appointment|substitute trustee|substitution of trustee|trustee appointment|notice of default|notice of trustee(?:'s)? sale|notice of sale|foreclosure notice|corrective|correction|forbearance/i;",
+              "const DERIVATIVE_LIEN_EVENT_PATTERN = /assignment|modification|amendment|extension|renewal|subordination agreement|appointment|substitute trustee|substitution of trustee|trustee appointment|notice of default|notice of trustee(?:'s)? sale|notice of sale|foreclosure notice|corrective|correction|forbearance/i;\nconst CONVEYANCE_DEED_PATTERN = /\\b(?:special warranty|general warranty|warranty|grant|quitclaim|quit claim|bargain(?: and| &) sale|trustee'?s?|sheriff'?s?|tax|executor'?s?|administrator'?s?)?\\s*deed\\b/i;"
+          )
+          replace_once(
+              "lib/lien-stack.ts",
+              "  if (isSecurityLienIdentityType(text)) return true;\n  return /judgment|notice and statement of lien|mechanic(?:'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\\blien\\b/i.test(text);",
+              "  if (isSecurityLienIdentityType(text)) return true;\n  // Conveyance deeds remain vesting instruments even when the caption reserves a vendor's lien.\n  // A separate vendor-lien/security instrument must be extracted before it gets its own lien identity.\n  if (CONVEYANCE_DEED_PATTERN.test(text) && !/deed of trust|security deed/i.test(text)) return false;\n  return /judgment|notice and statement of lien|mechanic(?:'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\\blien\\b/i.test(text);"
+          )
+
+          # 2) Verification belongs to the source page, not to whichever extractor produced the quote.
+          replace_once(
+              "lib/title-evidence-ledger.ts",
+              '    const nativeVerified = source === "native" && Boolean(nativePage && !nativePage.needsVisualReview && fuzzyContained(anchor.quote, nativePage.text));',
+              '    const nativeVerified = Boolean(nativePage && !nativePage.needsVisualReview && fuzzyContained(anchor.quote, nativePage.text));'
+          )
+
+          # 3) A second model may reason over verified evidence; model confidence alone is not evidence.
+          replace_once(
+              "lib/openai-title-checker.ts",
+              '  return nodes.length > 0 && nodes.every((node) => node && (node.source !== "native" ? node.confidence >= 0.7 : node.nativeVerified));',
+              '  return nodes.length > 0 && nodes.every((node) => node && node.nativeVerified);'
+          )
+
+          # 4) Multiple mortgages cannot silently turn the oldest mortgage into the controlling loan.
+          start = "function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {"
+          end = "\n}\n\nfunction factAnswered"
+          p = Path("lib/canonical-qc-engine.ts")
+          text = p.read_text()
+          s = text.index(start)
+          e = text.index(end, s)
+          replacement = '''function controllingSecurityInstrument(record: CanonicalTitleRecord): CanonicalInstrument | undefined {
+            const selected = record.targetLien.instrumentId ? record.mortgages.find((item) => item.id === record.targetLien.instrumentId) : undefined;
+            if (selected) return selected;
+            return record.mortgages.length === 1 ? record.mortgages[0] : undefined;
+          }'''.replace('          ', '')
+          p.write_text(text[:s] + replacement + text[e+2:])
+
+          # 5) Target-lien fields inherit confirmation only from independently verified ledger nodes.
+          p = Path("lib/canonical-title-builder.ts")
+          text = p.read_text()
+          marker = '''function sameInstrument(a: string, b: string): boolean {
+            const left = clean(a).toLowerCase().replace(/[^a-z0-9]/g, "");
+            const right = clean(b).toLowerCase().replace(/[^a-z0-9]/g, "");
+            return Boolean(left && left === right);
+          }
+          '''.replace('          ', '')
+          helper = marker + '''
+          function verifiedEvidence(ledger: TitleEvidenceLedger, ids: string[] | undefined): boolean {
+            if (!ids?.length) return false;
+            return ids.some((id) => ledger.evidence.find((node) => node.id === id)?.nativeVerified);
+          }
+          '''.replace('          ', '')
+          if "function verifiedEvidence(" not in text:
+              if marker not in text: raise SystemExit("sameInstrument marker missing")
+              text = text.replace(marker, helper, 1)
+          text = text.replace('state: mapped.refs.length ? "CONFIRMED" : "UNCONFIRMED",', 'state: verifiedEvidence(ledger, mapped.ids) ? "CONFIRMED" : "UNCONFIRMED",', 1)
+          text = text.replace('state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",', 'state: verifiedEvidence(ledger, selected.evidenceIds) ? "CONFIRMED" : "UNCONFIRMED",', 1)
+          text = text.replace('state: selected.evidence.length ? "CONFIRMED" : "UNCONFIRMED",', 'state: verifiedEvidence(ledger, selected.evidenceIds) ? "CONFIRMED" : "UNCONFIRMED",', 1)
+          old_beneficiary = 'beneficiary: selected && beneficiary ? { value: beneficiary.name, state: "CONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" }'
+          new_beneficiary = 'beneficiary: selected && beneficiary ? { value: beneficiary.name, state: verifiedEvidence(ledger, beneficiary.evidenceIds) ? "CONFIRMED" as const : "UNCONFIRMED" as const, evidence: beneficiary.evidence, evidenceIds: beneficiary.evidenceIds, basis: "Beneficiary/holder party on selected/automatically developed target lien" }'
+          if old_beneficiary not in text: raise SystemExit("beneficiary marker missing")
+          text = text.replace(old_beneficiary, new_beneficiary, 1)
+          p.write_text(text)
+
+          # 6) Examiner correction is an audited disposition, not fabricated source evidence.
+          replace_once(
+              "lib/review-decision-reducer.ts",
+              '      state: "CONFIRMED",\n      evidence: record.targetLien.position.evidence,\n      basis: `Examiner correction: ${positionDecision.reason}`,',
+              '      state: "UNCONFIRMED",\n      evidence: record.targetLien.position.evidence,\n      evidenceIds: record.targetLien.position.evidenceIds,\n      basis: `Examiner-approved correction (not documentary source confirmation): ${positionDecision.reason}`,',
+          )
+
+      - name: Install dependencies
+        run: npm install
+      - name: Verify repaired branch
+        run: npm run ci
+      - name: Commit verified repairs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib
+          if git diff --cached --quiet; then
+            echo "No source repair diff produced"
+            exit 0
+          fi
+          git commit -m "[munger-v2-fixed] Enforce source truth and examiner-safe review"
+          git push origin HEAD:audit/munger-inversion-v2
