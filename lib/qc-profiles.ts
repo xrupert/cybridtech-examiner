@@ -76,6 +76,7 @@ export const VERA_20_CHECKS: QcProfileCheck[] = [
   RELEASES, PROPERTY, LOAN_TYPE, LOAN_RECORDING, LOAN_STATUS, RECOURSE, REPORT_ERRORS, PLAT, MIN, RUN_SHEET,
 ];
 
+const GENERIC_TITLE_REVIEW_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, ...VERA_20_CHECKS];
 const CURRENT_OWNER_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, CURRENT_OWNER_FVD, CURRENT_OWNER_PMM, ...VERA_20_CHECKS];
 const TWO_OWNER_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, PRIOR_OWNER, OWNERSHIP_CHAIN, ...VERA_20_CHECKS];
 const SECOND_LIEN_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, OWNERSHIP_CHAIN, ...VERA_20_CHECKS];
@@ -86,6 +87,7 @@ function profile(id: string, name: string, orderType: string, checks: QcProfileC
 }
 
 export const QC_PROFILES: QcProfile[] = [
+  profile("vera-one-owner-generic-v4", "One Owner · Vera 20 (no loaded order-specific rule pack)", "One Owner Search", GENERIC_TITLE_REVIEW_CHECKS),
   profile("rcs-current-owner-v4", "RCS Current Owner", "Current Owner Search", CURRENT_OWNER_CHECKS),
   profile("ncala-two-owner-v4", "Ncala Two Owner", "Two Owner Search", TWO_OWNER_CHECKS),
   profile("rcs-second-lien-v4", "RCS 2nd Lien", "2nd Lien", SECOND_LIEN_CHECKS),
@@ -95,10 +97,10 @@ export const QC_PROFILES: QcProfile[] = [
 export const UNRESOLVED_QC_PROFILE: QcProfile = {
   id: "profile-unresolved-v4",
   version: 4,
-  name: "QC Profile Requires Examiner Selection",
+  name: "Vera 20 Generic · Order-Specific Rule Pack Not Loaded",
   orderType: "Needs review",
   unresolved: true,
-  checks: FORECLOSURE_CHECKS,
+  checks: GENERIC_TITLE_REVIEW_CHECKS,
 };
 
 export function profileForOrderType(orderType: string): QcProfile {
