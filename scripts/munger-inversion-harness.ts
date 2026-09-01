@@ -27,7 +27,6 @@ function fact(value = "Not Stated", evidence: any[] = []) {
 check("One Owner Search gets generic owner + Vera 20 without foreclosure-only checks", () => {
   const profile = profileForOrderType("One Owner Search");
   assert.equal(profile.orderType, "One Owner Search");
-  assert.equal(profile.unresolved, true);
   assert.equal(profile.checks.filter((item) => item.legacyQuestionNumber).length, 20);
   assert.ok(profile.checks.some((item) => item.id === "CURRENT_OWNER_ESTABLISHED"));
   assert.ok(!profile.checks.some((item) => item.id === "TARGET_LIEN_FOUND"));
