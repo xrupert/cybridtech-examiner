@@ -1,4 +1,4 @@
-import { profileForOrderType, type QcProfileCheck } from "./qc-profiles";
+import { profileForOrderType, UNRESOLVED_QC_PROFILE, type QcProfileCheck } from "./qc-profiles";
 import type { RunSheetReconciliation } from "./run-sheet-reconciler";
 import { issueMetadata, reduceQcChecks } from "./title-qc-engine";
 import type { CanonicalInstrument, CanonicalTitleRecord, QcCheckResult, QcProfileResult, QcStatus } from "./title-domain";
@@ -166,8 +166,10 @@ function profileCheck(
       return result(check, "PASS", `Target lien established as ${record.targetLien.instrumentNumber.value}.`, record.targetLien.instrumentNumber.evidence, record.targetLien.instrumentNumber.evidenceIds);
 
     case "TARGET_LIEN_POSITION_ESTABLISHED": {
-      if (record.targetLien.position.state === "CONFIRMED") {
-        const summary = record.targetLien.positionBasis === "EXPLICIT"
+      if (record.targetLien.position.state === "CONFIRMED" || record.targetLien.position.state === "EXAMINER_CONFIRMED") {
+        const summary = record.targetLien.positionBasis === "EXAMINER"
+          ? `Target lien position is examiner-confirmed as ${record.targetLien.position.value}; documentary source facts remain separately auditable.`
+          : record.targetLien.positionBasis === "EXPLICIT"
           ? `Target lien position is expressly stated as ${record.targetLien.position.value}.`
           : `Target lien position developed as ${record.targetLien.position.value} using first-in-time recording chronology with no detected priority exception requiring downgrade.`;
         return result(check, "PASS", summary, record.targetLien.position.evidence, record.targetLien.position.evidenceIds);
@@ -339,7 +341,7 @@ function profileCheck(
 }
 
 export function initialCanonicalQc(record: CanonicalTitleRecord, titleSummaryReconciliation: RunSheetReconciliation, runSheetReconciliation: RunSheetReconciliation): QcProfileResult {
-  const profile = profileForOrderType(record.orderType.value);
+  const profile = record.orderType.state === "CONFIRMED" ? profileForOrderType(record.orderType.value) : UNRESOLVED_QC_PROFILE;
   const checks = profile.checks.map((check) => profileCheck(check, record, titleSummaryReconciliation, runSheetReconciliation));
   return reduceQcChecks({ profileId: profile.id, profileVersion: profile.version, profileName: profile.name }, checks);
 }

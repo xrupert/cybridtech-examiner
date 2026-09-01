@@ -39,6 +39,7 @@ function instrument(raw: RawInstrument, ledger: TitleEvidenceLedger, index: numb
     sourcePages: [...new Set(mapped.refs.map((item) => item.page))].sort((a, b) => a - b),
     evidence: mapped.refs,
     evidenceIds: mapped.ids,
+    evidenceState: mapped.ids.some((id) => ledger.evidence.find((node) => node.id === id)?.nativeVerified) ? "CONFIRMED" : mapped.ids.length ? "UNCONFIRMED" : "NOT_STATED",
   };
 }
 
@@ -100,7 +101,7 @@ function summaryAmount(raw: RawTitlePacketExtraction, instrumentNumber: string, 
   };
 }
 
-function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacketExtraction, ledger: TitleEvidenceLedger, lienStack: CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"]) {
+function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacketExtraction, ledger: TitleEvidenceLedger, lienStack: CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"], allowAutomaticTarget: boolean) {
   const mortgageIdentityIds = new Set(lienStack.filter((entry) => isSecurityLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentId));
   const mortgages = recordInstruments.filter((item) => mortgageIdentityIds.has(item.id));
   const mortgageEntries = lienStack.filter((entry) => mortgageIdentityIds.has(entry.instrumentId));
@@ -116,7 +117,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
     if (selected) selectionBasis = "Matched explicit target-lien hint to normalized security-lien identity";
   }
 
-  if (!selected) {
+  if (!selected && allowAutomaticTarget) {
     const automaticId = automaticTargetSecurityLienId(lienStack, summaryMortgageNumbers);
     selected = automaticId ? mortgages.find((item) => item.id === automaticId) : undefined;
     if (selected) {
@@ -158,7 +159,7 @@ function targetLien(recordInstruments: CanonicalInstrument[], raw: RawTitlePacke
   };
 
   const unresolvedMortgageIdentityExists = mortgageEntries.some((entry) => entry.status === "UNKNOWN");
-  const selectionRequired = !selected && (openMortgageEntries.length > 0 || unresolvedMortgageIdentityExists);
+  const selectionRequired = allowAutomaticTarget && !selected && (openMortgageEntries.length > 0 || unresolvedMortgageIdentityExists);
 
   return {
     instrumentId: selected?.id || null,
@@ -232,11 +233,13 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   const assignments = instruments.filter((item) => typeIs(item.type, /assignment/));
   const releases = instruments.filter((item) => typeIs(item.type, /release|satisfaction|reconveyance|discharge/));
   const titleSummaryLienNumbers = raw.runSheet.entries.filter((entry) => isLienIdentityType(entry.instrumentType)).map((entry) => entry.instrumentNumber);
-  const lienStack = buildLienStack(instruments, releases, { titleSummaryOpenInstrumentNumbers: titleSummaryLienNumbers });
+  const verifiedInstrumentIds = instruments.filter((item) => item.evidenceState === "CONFIRMED").map((item) => item.id);
+  const lienStack = buildLienStack(instruments, releases, { titleSummaryOpenInstrumentNumbers: titleSummaryLienNumbers, verifiedInstrumentIds });
   const lienIdentityIds = new Set(lienStack.map((entry) => entry.instrumentId));
   const mortgages = instruments.filter((item) => lienIdentityIds.has(item.id) && isSecurityLienIdentityType(item.type));
   const liens = instruments.filter((item) => lienIdentityIds.has(item.id) && !isSecurityLienIdentityType(item.type));
-  const developedTarget = targetLien(instruments, raw, ledger, lienStack);
+  const foreclosureMode = orderType.state === "CONFIRMED" && /^foreclosure$/i.test(orderType.value);
+  const developedTarget = targetLien(instruments, raw, ledger, lienStack, foreclosureMode);
   const { _selectedStackStatus: _selectedStackStatusIgnored, ...targetLienRecord } = developedTarget;
   const foreclosureAnalysis = buildForeclosureAnalysis({
     lienStack,
@@ -246,6 +249,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
     targetPositionBasis: targetLienRecord.positionBasis,
     targetPositionConfidence: targetLienRecord.positionConfidence,
     selectionRequired: targetLienRecord.selectionRequired,
+    requireTarget: foreclosureMode,
   });
 
   const record: CanonicalTitleRecord = {

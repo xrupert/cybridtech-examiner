@@ -128,6 +128,19 @@ function washington(record: CanonicalTitleRecord): JurisdictionAnalysis {
 
 export function jurisdictionAnalysisForRecord(record: CanonicalTitleRecord): JurisdictionAnalysis {
   const state = stateCode(record.state.value);
+  const foreclosureOrder = record.orderType.state === "CONFIRMED" && /^foreclosure$/i.test(record.orderType.value);
+  if (!foreclosureOrder) {
+    return {
+      coverage: {
+        state: state || "UNRESOLVED",
+        county: record.county.value,
+        status: state === "WA" ? "CURATED" : state && state !== "NEEDS REVIEW" ? "GENERAL_ONLY" : "UNAVAILABLE",
+        ruleSetVersion: state === "WA" ? WA_RULE_VERSION : "GENERAL-2026-08-31",
+        note: `Foreclosure-process rules are not invoked for ${record.orderType.value}. Cybrid is performing title/QC review only; a confirmed or examiner-selected Foreclosure profile is required before sale-process requirements are projected.`,
+      },
+      requirements: [],
+    };
+  }
   if (state === "WA") return washington(record);
 
   return {

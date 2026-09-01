@@ -1,10 +1,10 @@
 import type { EvidenceRef, FindingStatus } from "./vera";
 
-export type EvidenceState = "CONFIRMED" | "UNCONFIRMED" | "NOT_STATED";
+export type EvidenceState = "CONFIRMED" | "EXAMINER_CONFIRMED" | "UNCONFIRMED" | "NOT_STATED";
 export type QcStatus = "PASS" | "FAIL" | "CANNOT_CONFIRM" | "NOT_APPLICABLE";
 export type ForeclosureReadiness = "CLEAR" | "QC_DEFICIENCY" | "CURATIVE_REQUIRED" | "CANNOT_CONFIRM";
 export type CurativeSeverity = "BLOCKING" | "REVIEW" | "QC" | "INFO";
-export type LienPriorityBasis = "EXPLICIT" | "FIRST_IN_TIME" | "UNRESOLVED";
+export type LienPriorityBasis = "EXPLICIT" | "EXAMINER" | "FIRST_IN_TIME" | "UNRESOLVED";
 export type LienPriorityConfidence = "high" | "medium" | "low";
 export type ForeclosureRequirementType = "CURE" | "PRIORITY_REVIEW" | "PAYOFF_REVIEW" | "NOTICE_REVIEW" | "EVIDENCE";
 
@@ -39,6 +39,7 @@ export interface CanonicalInstrument {
   sourcePages: number[];
   evidence: EvidenceRef[];
   evidenceIds?: string[];
+  evidenceState?: EvidenceState;
 }
 
 export interface CanonicalRunSheetEntry {

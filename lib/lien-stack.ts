@@ -10,6 +10,7 @@ import type { EvidenceRef } from "./vera";
 
 export interface LienStackBuildOptions {
   titleSummaryOpenInstrumentNumbers?: string[];
+  verifiedInstrumentIds?: string[];
 }
 
 function clean(value: string): string {
@@ -147,14 +148,16 @@ export function buildLienStack(
   options: LienStackBuildOptions = {},
 ): CanonicalLienStackEntry[] {
   const identities = instruments.filter(isEncumbranceIdentity);
-  const relevantReleases = releases.filter(isReleaseInstrument);
+  const verificationProvided = Array.isArray(options.verifiedInstrumentIds);
+  const verifiedIds = new Set(options.verifiedInstrumentIds || []);
+  const relevantReleases = releases.filter(isReleaseInstrument).filter((release) => !verificationProvided || verifiedIds.has(release.id));
   const releasedIds = releasedInstrumentIds(identities, relevantReleases);
   const titleSummaryOpenNumbers = new Set((options.titleSummaryOpenInstrumentNumbers || []).map(normalizeInstrumentNumber).filter(Boolean));
   const source = identities.map((instrument) => ({
     instrument,
     date: dateKey(instrument.recordingDate),
     sequence: sequenceKey(instrument.instrumentNumber),
-    status: statusFromInstrument(instrument, releasedIds, titleSummaryOpenNumbers),
+    status: verificationProvided && !verifiedIds.has(instrument.id) ? "UNKNOWN" as const : statusFromInstrument(instrument, releasedIds, titleSummaryOpenNumbers),
   }));
 
   const open = source.filter((item) => item.status === "OPEN");
@@ -228,6 +231,8 @@ export function buildLienStack(
 }
 
 export function automaticTargetSecurityLienId(stack: CanonicalLienStackEntry[], titleSummaryInstrumentNumbers: string[]): string | null {
+  const unresolvedSecurity = stack.some((entry) => entry.status === "UNKNOWN" && isSecurityLienIdentityType(entry.instrumentType));
+  if (unresolvedSecurity) return null;
   const openSecurity = stack.filter((entry) => entry.status === "OPEN" && isSecurityLienIdentityType(entry.instrumentType));
   if (!openSecurity.length) return null;
   if (openSecurity.length === 1) return openSecurity[0].instrumentId;
@@ -288,6 +293,7 @@ export function buildForeclosureAnalysis(args: {
   targetPositionBasis: LienPriorityBasis;
   targetPositionConfidence: LienPriorityConfidence;
   selectionRequired: boolean;
+  requireTarget?: boolean;
 }): ForeclosureAnalysis {
   const open = args.lienStack.filter((entry) => entry.status === "OPEN");
   const unknown = args.lienStack.filter((entry) => entry.status === "UNKNOWN");
@@ -296,23 +302,24 @@ export function buildForeclosureAnalysis(args: {
   const senior = targetPosition ? open.filter((entry) => entry.chronologicalPosition != null && entry.chronologicalPosition < targetPosition) : [];
   const junior = targetPosition ? open.filter((entry) => entry.chronologicalPosition != null && entry.chronologicalPosition > targetPosition) : [];
   const requirements: ForeclosureRequirement[] = [];
+  const requireTarget = args.requireTarget !== false;
 
-  if (args.selectionRequired || !target) requirements.push(requirement("TARGET_LIEN_SELECTION", "EVIDENCE", "BLOCKING", "Foreclosure target lien is unresolved.", "Develop the controlling security lien from packet evidence before relying on amount, position, payoff, notice, or cure analysis. Examiner selection should be used only when the packet cannot support an automatic target.", open.concat(unknown)));
-  if (target && (!clean(args.targetAmount) || /^needs review$/i.test(args.targetAmount))) requirements.push(requirement("TARGET_LIEN_AMOUNT", "EVIDENCE", "BLOCKING", "Target lien amount is unresolved.", "Confirm the original/recorded lien amount from the controlling security instrument or title-report source evidence.", [target]));
-  if (target && (!clean(args.targetPosition) || /^needs review$/i.test(args.targetPosition))) requirements.push(requirement("TARGET_LIEN_POSITION", "PRIORITY_REVIEW", "BLOCKING", "Target lien position cannot be developed from the available recording evidence.", "Resolve lien-status, recording-date, sequence, or priority evidence before foreclosure treatment is finalized.", [target]));
-  if (target?.priorityWarning) requirements.push(requirement("PRIORITY_EXCEPTION_REVIEW", "PRIORITY_REVIEW", "REVIEW", target.priorityWarning, "Apply the governing state/jurisdiction priority rule before treating the chronological stack as legal priority.", [target]));
-  if (args.targetPositionBasis === "FIRST_IN_TIME" && args.targetPositionConfidence !== "high") requirements.push(requirement("FIRST_IN_TIME_CONFIDENCE", "PRIORITY_REVIEW", "REVIEW", "Lien position is developed from first-in-time chronology but carries a priority exception or sequencing uncertainty.", "Examiner should confirm the applicable priority exception before foreclosure referral/export is finalized.", target ? [target] : []));
+  if (requireTarget && (args.selectionRequired || !target)) requirements.push(requirement("TARGET_LIEN_SELECTION", "EVIDENCE", "BLOCKING", "Foreclosure target lien is unresolved.", "Develop the controlling security lien from packet evidence before relying on amount, position, payoff, notice, or cure analysis. Examiner selection should be used only when the packet cannot support an automatic target.", open.concat(unknown)));
+  if (requireTarget && target && (!clean(args.targetAmount) || /^needs review$/i.test(args.targetAmount))) requirements.push(requirement("TARGET_LIEN_AMOUNT", "EVIDENCE", "BLOCKING", "Target lien amount is unresolved.", "Confirm the original/recorded lien amount from the controlling security instrument or title-report source evidence.", [target]));
+  if (requireTarget && target && (!clean(args.targetPosition) || /^needs review$/i.test(args.targetPosition))) requirements.push(requirement("TARGET_LIEN_POSITION", "PRIORITY_REVIEW", "BLOCKING", "Target lien position cannot be developed from the available recording evidence.", "Resolve lien-status, recording-date, sequence, or priority evidence before foreclosure treatment is finalized.", [target]));
+  if (requireTarget && target?.priorityWarning) requirements.push(requirement("PRIORITY_EXCEPTION_REVIEW", "PRIORITY_REVIEW", "REVIEW", target.priorityWarning, "Apply the governing state/jurisdiction priority rule before treating the chronological stack as legal priority.", [target]));
+  if (requireTarget && args.targetPositionBasis === "FIRST_IN_TIME" && args.targetPositionConfidence !== "high") requirements.push(requirement("FIRST_IN_TIME_CONFIDENCE", "PRIORITY_REVIEW", "REVIEW", "Lien position is developed from first-in-time chronology but carries a priority exception or sequencing uncertainty.", "Examiner should confirm the applicable priority exception before foreclosure referral/export is finalized.", target ? [target] : []));
 
   for (const entry of unknown) {
     requirements.push(requirement(`LIEN_STATUS_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "EVIDENCE", "REVIEW", `Lien status unresolved: ${entry.instrumentType} ${entry.instrumentNumber} · ${entry.amount}.`, "Determine whether this lien identity is open, released, satisfied, or otherwise no longer affecting title before relying on the final lien count or priority stack.", [entry]));
   }
-  for (const entry of senior) {
+  for (const entry of requireTarget ? senior : []) {
     requirements.push(requirement(`SENIOR_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "PAYOFF_REVIEW", "REVIEW", `Senior open encumbrance: ${entry.positionLabel} · ${entry.instrumentType} ${entry.instrumentNumber} · ${entry.amount}.`, "Confirm whether the foreclosure will remain subject to this senior interest or whether payoff, subordination, release, or other treatment is required for the intended foreclosure outcome.", [entry]));
   }
-  for (const entry of junior) {
+  for (const entry of requireTarget ? junior : []) {
     requirements.push(requirement(`JUNIOR_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "NOTICE_REVIEW", "REVIEW", `Junior open encumbrance: ${entry.positionLabel} · ${entry.instrumentType} ${entry.instrumentNumber} · ${entry.amount}.`, "Confirm required notice, joinder, service, and foreclosure treatment for this junior interest under the governing jurisdiction and process.", [entry]));
   }
-  for (const entry of open.filter((candidate) => candidate.priorityWarning && candidate.instrumentId !== target?.instrumentId)) {
+  for (const entry of (requireTarget ? open : []).filter((candidate) => candidate.priorityWarning && candidate.instrumentId !== target?.instrumentId)) {
     requirements.push(requirement(`STACK_EXCEPTION_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "PRIORITY_REVIEW", "REVIEW", `${entry.instrumentType} ${entry.instrumentNumber}: ${entry.priorityWarning}`, "Resolve the priority exception before relying on the lien-stack order for foreclosure treatment.", [entry]));
   }
 
