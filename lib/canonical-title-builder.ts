@@ -15,8 +15,8 @@ function fact(raw: RawFact, ledger: TitleEvidenceLedger, basis: string): Evidenc
   const matchingNodes = mapped.ids.map((id) => ledger.evidence.find((node) => node.id === id)).filter(Boolean);
   let state: EvidenceState = "NOT_STATED";
   if (value) {
-    const strong = matchingNodes.some((node) => node && (node.nativeVerified || node.confidence >= 0.8));
-    state = strong ? "CONFIRMED" : "UNCONFIRMED";
+    const sourceVerified = matchingNodes.some((node) => node && node.nativeVerified);
+    state = sourceVerified ? "CONFIRMED" : "UNCONFIRMED";
   }
   return { value: value || "Needs review", state, evidence: mapped.refs, evidenceIds: mapped.ids, basis };
 }
@@ -193,7 +193,7 @@ export function buildCanonicalTitleRecordFromExtraction(args: {
   const { extraction: raw, ledger } = args;
   const instruments = (raw.instruments || []).map((item, index) => instrument(item, ledger, index));
   const summaryMapped = evidenceRefsForAnchors(ledger, raw.runSheet.evidence || []);
-  const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\b(run sheet|abstractor sheet|abstractor)\b/i.test(`${item.documentType} ${item.quote}`));
+  const explicitRunSheetLabel = summaryMapped.refs.some((item) => /\b(run sheet|abstractor sheet)\b/i.test(`${item.documentType} ${item.quote}`));
   const summaryEntries = (raw.runSheet.entries || []).map((item, index) => summaryEntry(item, ledger, index, "summary"));
   const titleSummary: RunSheetSummary = {
     detected: Boolean(raw.runSheet.detected),
