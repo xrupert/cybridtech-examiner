@@ -4,6 +4,7 @@ export const SEARCH_TYPES = [
   "Foreclosure",
   "2nd Lien",
   "Current Owner Search",
+  "One Owner Search",
   "Two Owner Search",
 ] as const;
 
@@ -118,6 +119,7 @@ export const RCS_ORDER_REQUIREMENTS: Record<SupportedSearchType, readonly string
     "Search back to a non-family Full Value Transfer Deed with a concurrently filed purchase-money mortgage from an institutional lender unless the order instructions say otherwise.",
     "Required document copies include all pages.",
   ],
+  "One Owner Search": [],
   "Two Owner Search": [
     "Demo client requirement supplied by the owner on 2026-08-30: establish the current owner and the immediately prior owner from deed evidence in the supplied title packet.",
     "The title summary must identify and reconcile the two ownership transfers used to establish the current and prior owners, including the deed parties and recording facts available in the packet.",
