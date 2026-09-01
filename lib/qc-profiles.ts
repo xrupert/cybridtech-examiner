@@ -3,6 +3,7 @@ export type ProfileCheckId =
   | "PRIOR_OWNER_ESTABLISHED"
   | "OWNERSHIP_CHAIN_COMPLETE"
   | "TARGET_LIEN_FOUND"
+  | "TARGET_LIEN_AMOUNT"
   | "TARGET_LIEN_POSITION_ESTABLISHED"
   | "HOA_STATUS_REVIEWED"
   | "CCRS_REVIEWED"
@@ -48,6 +49,7 @@ const OWNERSHIP_CHAIN: QcProfileCheck = { id: "OWNERSHIP_CHAIN_COMPLETE", label:
 const CURRENT_OWNER_FVD: QcProfileCheck = { id: "PRIOR_OWNER_ESTABLISHED", label: "Qualifying non-family full-value deed established with recording date, amount, and vesting", critical: true, category: "Current Owner Search" };
 const CURRENT_OWNER_PMM: QcProfileCheck = { id: "OWNERSHIP_CHAIN_COMPLETE", label: "Qualifying full-value deed has a concurrently filed institutional purchase-money mortgage", critical: true, category: "Current Owner Search" };
 const TARGET_LIEN: QcProfileCheck = { id: "TARGET_LIEN_FOUND", label: "Foreclosure target lien identified", critical: true, category: "Foreclosure Lien" };
+const TARGET_AMOUNT: QcProfileCheck = { id: "TARGET_LIEN_AMOUNT", label: "Foreclosure target lien amount confirmed", critical: true, category: "Foreclosure Lien" };
 const TARGET_POSITION: QcProfileCheck = { id: "TARGET_LIEN_POSITION_ESTABLISHED", label: "Foreclosure target lien position established", critical: true, category: "Foreclosure Lien" };
 
 const HOA: QcProfileCheck = { id: "HOA_STATUS_REVIEWED", label: "Is there an HOA or is HOA not applicable?", critical: false, category: "Vera 20", legacyQuestionNumber: 1 };
@@ -80,7 +82,7 @@ const GENERIC_TITLE_REVIEW_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, ...VERA_20
 const CURRENT_OWNER_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, CURRENT_OWNER_FVD, CURRENT_OWNER_PMM, ...VERA_20_CHECKS];
 const TWO_OWNER_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, PRIOR_OWNER, OWNERSHIP_CHAIN, ...VERA_20_CHECKS];
 const SECOND_LIEN_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, OWNERSHIP_CHAIN, ...VERA_20_CHECKS];
-const FORECLOSURE_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, OWNERSHIP_CHAIN, TARGET_LIEN, TARGET_POSITION, ...VERA_20_CHECKS];
+const FORECLOSURE_CHECKS: QcProfileCheck[] = [CURRENT_OWNER, OWNERSHIP_CHAIN, TARGET_LIEN, TARGET_AMOUNT, TARGET_POSITION, ...VERA_20_CHECKS];
 
 function profile(id: string, name: string, orderType: string, checks: QcProfileCheck[]): QcProfile {
   return { id, version: 4, name, orderType, checks };
