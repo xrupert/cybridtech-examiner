@@ -23,6 +23,7 @@ function normalizeInstrumentNumber(value: string): string {
 
 const RELEASE_PATTERN = /release|satisfaction|reconveyance|discharge|termination|cancel(?:led|lation)?/i;
 const DERIVATIVE_LIEN_EVENT_PATTERN = /assignment|modification|amendment|extension|renewal|subordination agreement|appointment|substitute trustee|substitution of trustee|trustee appointment|notice of default|notice of trustee(?:'s)? sale|notice of sale|foreclosure notice|corrective|correction|forbearance/i;
+const CONVEYANCE_DEED_PATTERN = /\b(?:special warranty|general warranty|warranty|grant|quitclaim|quit claim|bargain(?: and| &) sale|trustee'?s?|sheriff'?s?|tax|executor'?s?|administrator'?s?)?\s*deed\b/i;
 
 export function isSecurityLienIdentityType(type: string): boolean {
   const text = clean(type);
@@ -36,6 +37,10 @@ export function isLienIdentityType(type: string): boolean {
   const text = clean(type);
   if (!text || RELEASE_PATTERN.test(text) || DERIVATIVE_LIEN_EVENT_PATTERN.test(text)) return false;
   if (isSecurityLienIdentityType(text)) return true;
+  // A conveyance instrument remains a deed even when its caption says "with vendor's lien".
+  // The embedded vendor-lien language may matter to title review, but it is not promoted into
+  // a second lien-stack identity unless extraction supplies a distinct lien/security instrument.
+  if (CONVEYANCE_DEED_PATTERN.test(text) && !/deed of trust|security deed/i.test(text)) return false;
   return /judgment|notice and statement of lien|mechanic(?:'s)? lien|construction lien|hoa lien|association lien|assessment lien|ucc(?: financing statement)?|federal tax lien|tax lien|\blien\b/i.test(text);
 }
 
@@ -89,52 +94,55 @@ function statusFromInstrument(
   return "UNKNOWN";
 }
 
-function holderFor(instrument: CanonicalInstrument): string {
-  return instrument.parties.find((party) => /beneficiary|mortgagee|lender|holder|creditor|claimant|lienor/i.test(party.role))?.name
-    || instrument.parties.find((party) => !/borrower|mortgagor|debtor|grantor|owner/i.test(party.role))?.name
-    || "Needs review";
-}
-
 function dateKey(value: string): number | null {
-  const text = clean(value);
-  if (!text) return null;
-  const parsed = Date.parse(text);
+  const parsed = Date.parse(clean(value));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function sequenceKey(value: string): bigint | null {
-  const normalized = normalizeInstrumentNumber(value);
-  const digits = normalized.replace(/\D/g, "");
-  if (!digits || digits.length > 30) return null;
-  try { return BigInt(digits); } catch { return null; }
+function priorityFlag(type: string): string | null {
+  if (/federal tax lien|tax lien/i.test(type)) return "Tax lien priority may depend on statute, assessment/filing timing, notice, and foreclosure procedure.";
+  if (/mechanic|construction/i.test(type)) return "Mechanics/construction lien priority may relate back under governing state law.";
+  if (/hoa|association|assessment/i.test(type)) return "HOA/association assessment priority may include statutory or super-priority rules.";
+  if (/ucc/i.test(type)) return "UCC/fixture filing priority requires collateral and fixture-filing review.";
+  return null;
 }
 
-function ordinal(position: number): string {
-  const mod100 = position % 100;
-  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : position % 10 === 1 ? "st" : position % 10 === 2 ? "nd" : position % 10 === 3 ? "rd" : "th";
-  return `${position}${suffix} Lien`;
-}
-
-function exceptionWarning(type: string): string {
-  if (/federal tax|irs|tax lien/i.test(type)) return "Tax-lien priority and foreclosure notice/redemption rules can override a simple recording-date ranking.";
-  if (/mechanic|construction/i.test(type)) return "Mechanics/construction lien priority can relate back to work dates and requires jurisdiction-specific review.";
-  if (/hoa|association|assessment/i.test(type)) return "HOA/association lien priority can be affected by statutory super-priority rules and requires jurisdiction-specific review.";
-  if (/ucc/i.test(type)) return "UCC priority depends on collateral and perfection rules; chronological recording is only a screening baseline.";
-  return "";
-}
-
-function uniqueEvidence(entries: CanonicalLienStackEntry[]): { refs: EvidenceRef[]; ids: string[] } {
-  const refs: EvidenceRef[] = [];
-  const ids: string[] = [];
-  const refKeys = new Set<string>();
+function sameDayAmbiguity(entries: CanonicalLienStackEntry[]): boolean {
+  const counts = new Map<string, number>();
   for (const entry of entries) {
-    for (const ref of entry.evidence) {
-      const key = `${ref.page}|${ref.documentType}|${ref.quote}`;
-      if (!refKeys.has(key)) { refKeys.add(key); refs.push(ref); }
-    }
-    for (const id of entry.evidenceIds || []) if (!ids.includes(id)) ids.push(id);
+    const date = clean(entry.recordingDate).slice(0, 10);
+    if (!date) continue;
+    counts.set(date, (counts.get(date) || 0) + 1);
   }
-  return { refs, ids };
+  return [...counts.values()].some((count) => count > 1);
+}
+
+function chronological(entries: CanonicalLienStackEntry[]): CanonicalLienStackEntry[] {
+  return [...entries].sort((a, b) => {
+    const ad = dateKey(a.recordingDate);
+    const bd = dateKey(b.recordingDate);
+    if (ad == null && bd == null) return 0;
+    if (ad == null) return 1;
+    if (bd == null) return -1;
+    return ad - bd;
+  });
+}
+
+function developedPositionLabel(index: number): string {
+  const n = index + 1;
+  if (n === 1) return "1st Lien";
+  if (n === 2) return "2nd Lien";
+  if (n === 3) return "3rd Lien";
+  return `${n}th Lien`;
+}
+
+function positionBasis(active: CanonicalLienStackEntry[]): { basis: LienPriorityBasis; confidence: LienPriorityConfidence; warning: string | null } {
+  if (!active.length) return { basis: "UNRESOLVED", confidence: "low", warning: "No confirmed open liens were available for priority development." };
+  if (active.some((entry) => dateKey(entry.recordingDate) == null)) return { basis: "FIRST_IN_TIME", confidence: "low", warning: "One or more open lien identities lack a usable recording date." };
+  const exceptions = active.map((entry) => priorityFlag(entry.instrumentType)).filter((value): value is string => Boolean(value));
+  if (exceptions.length) return { basis: "FIRST_IN_TIME", confidence: "medium", warning: [...new Set(exceptions)].join(" ") };
+  if (sameDayAmbiguity(active)) return { basis: "FIRST_IN_TIME", confidence: "medium", warning: "Multiple open lien identities share a recording date; instrument-time/sequence review may be required." };
+  return { basis: "FIRST_IN_TIME", confidence: "high", warning: null };
 }
 
 export function buildLienStack(
@@ -143,137 +151,95 @@ export function buildLienStack(
   options: LienStackBuildOptions = {},
 ): CanonicalLienStackEntry[] {
   const identities = instruments.filter(isEncumbranceIdentity);
-  const relevantReleases = releases.filter(isReleaseInstrument);
-  const releasedIds = releasedInstrumentIds(identities, relevantReleases);
+  const allReleases = [...releases, ...instruments.filter(isReleaseInstrument)];
+  const releasedIds = releasedInstrumentIds(identities, allReleases);
   const titleSummaryOpenNumbers = new Set((options.titleSummaryOpenInstrumentNumbers || []).map(normalizeInstrumentNumber).filter(Boolean));
-  const source = identities.map((instrument) => ({
-    instrument,
-    date: dateKey(instrument.recordingDate),
-    sequence: sequenceKey(instrument.instrumentNumber),
+
+  const raw = identities.map((instrument): CanonicalLienStackEntry => ({
+    instrumentId: instrument.id,
+    instrumentType: instrument.type,
+    instrumentNumber: instrument.instrumentNumber,
+    amount: instrument.amount,
+    recordingDate: instrument.recordingDate,
     status: statusFromInstrument(instrument, releasedIds, titleSummaryOpenNumbers),
+    positionLabel: "Needs review",
+    priorityBasis: "UNRESOLVED",
+    priorityConfidence: "low",
+    priorityWarning: null,
+    evidence: instrument.evidence,
+    evidenceIds: instrument.evidenceIds,
   }));
 
-  const open = source.filter((item) => item.status === "OPEN");
-  const unknown = source.filter((item) => item.status === "UNKNOWN");
-  open.sort((a, b) => {
-    if (a.date == null && b.date == null) return 0;
-    if (a.date == null) return 1;
-    if (b.date == null) return -1;
-    if (a.date !== b.date) return a.date - b.date;
-    if (a.sequence != null && b.sequence != null && a.sequence !== b.sequence) return a.sequence < b.sequence ? -1 : 1;
-    return 0;
+  const active = chronological(raw.filter((entry) => entry.status === "OPEN"));
+  const priority = positionBasis(active);
+  active.forEach((entry, index) => {
+    entry.positionLabel = developedPositionLabel(index);
+    entry.priorityBasis = priority.basis;
+    entry.priorityConfidence = priority.confidence;
+    entry.priorityWarning = priority.warning;
   });
-
-  const activePositions = new Map<string, { position: number | null; confidence: LienPriorityConfidence; warning: string }>();
-  for (let index = 0; index < open.length; index += 1) {
-    const current = open[index];
-    const sameDay = open.filter((candidate) => current.date != null && candidate.date === current.date);
-    const ambiguousTie = sameDay.length > 1 && sameDay.some((candidate) => candidate.sequence == null) && !sameDay.every((candidate) => candidate.sequence != null);
-    const statutoryWarning = exceptionWarning(current.instrument.type);
-    const missingDate = current.date == null;
-    const unresolvedCouldAffectPosition = unknown.some((candidate) => candidate.date == null || current.date == null || candidate.date <= current.date);
-    const warning = missingDate
-      ? "Recording date is unresolved, so first-in-time position cannot be calculated."
-      : unresolvedCouldAffectPosition
-        ? "One or more lien identities have unresolved open/released status and could affect this position; exact priority remains unresolved."
-        : ambiguousTie
-          ? "Multiple open encumbrances share the same recording date without a reliable recording sequence; exact priority needs examiner review."
-          : statutoryWarning;
-    const position = missingDate || unresolvedCouldAffectPosition || ambiguousTie ? null : index + 1;
-    const confidence: LienPriorityConfidence = position == null ? "low" : statutoryWarning ? "medium" : "high";
-    activePositions.set(current.instrument.id, { position, confidence, warning });
+  for (const entry of raw.filter((item) => item.status !== "OPEN")) {
+    entry.positionLabel = entry.status === "RELEASED" ? "Released/Historical" : "Unresolved";
+    entry.priorityBasis = "UNRESOLVED";
+    entry.priorityConfidence = "low";
+    entry.priorityWarning = entry.status === "UNKNOWN" ? "Lien identity exists but current open/released status is not established." : null;
   }
 
-  return source.map(({ instrument, status, date }) => {
-    const position = status === "OPEN" ? activePositions.get(instrument.id)?.position ?? null : null;
-    const confidence = status === "RELEASED" ? "high" : status === "OPEN" ? activePositions.get(instrument.id)?.confidence || "low" : "low";
-    const warning = status === "RELEASED"
-      ? "Released/satisfied instrument is excluded from the open-lien priority stack."
-      : status === "UNKNOWN"
-        ? "Lien status is unresolved; this identity is excluded from the open-lien count and final priority until open/unreleased status is supported."
-        : activePositions.get(instrument.id)?.warning || "";
-    return {
-      instrumentId: instrument.id,
-      instrumentType: instrument.type,
-      instrumentNumber: instrument.instrumentNumber,
-      amount: instrument.amount,
-      recordingDate: instrument.recordingDate,
-      holder: holderFor(instrument),
-      status,
-      chronologicalPosition: position,
-      positionLabel: position ? ordinal(position) : status === "RELEASED" ? "Released" : "Needs review",
-      priorityBasis: position ? "FIRST_IN_TIME" as const : "UNRESOLVED" as const,
-      priorityConfidence: confidence,
-      priorityWarning: warning,
-      evidence: instrument.evidence,
-      evidenceIds: instrument.evidenceIds,
-      _sortDate: date,
-    } as CanonicalLienStackEntry & { _sortDate: number | null };
-  }).sort((a, b) => {
-    const rank = (status: CanonicalLienStackEntry["status"]) => status === "OPEN" ? 0 : status === "UNKNOWN" ? 1 : 2;
-    const statusDifference = rank(a.status) - rank(b.status);
-    if (statusDifference) return statusDifference;
-    if (a.chronologicalPosition != null && b.chronologicalPosition != null) return a.chronologicalPosition - b.chronologicalPosition;
-    const ad = (a as CanonicalLienStackEntry & { _sortDate?: number | null })._sortDate;
-    const bd = (b as CanonicalLienStackEntry & { _sortDate?: number | null })._sortDate;
-    if (ad == null && bd == null) return 0;
-    if (ad == null) return 1;
-    if (bd == null) return -1;
-    return ad - bd;
-  }).map(({ _sortDate: _ignored, ...entry }) => entry);
+  return raw;
 }
 
-export function automaticTargetSecurityLienId(stack: CanonicalLienStackEntry[], titleSummaryInstrumentNumbers: string[]): string | null {
-  const openSecurity = stack.filter((entry) => entry.status === "OPEN" && isSecurityLienIdentityType(entry.instrumentType));
-  if (!openSecurity.length) return null;
-  if (openSecurity.length === 1) return openSecurity[0].instrumentId;
+function isSecurityEntry(entry: CanonicalLienStackEntry): boolean {
+  return isSecurityLienIdentityType(entry.instrumentType);
+}
 
-  const summaryNumbers = new Set(titleSummaryInstrumentNumbers.map(normalizeInstrumentNumber).filter(Boolean));
-  const allOpenSecurityLiensSummarized = openSecurity.every((entry) => {
-    const number = normalizeInstrumentNumber(entry.instrumentNumber);
-    return Boolean(number && summaryNumbers.has(number));
-  });
-  if (!allOpenSecurityLiensSummarized) return null;
+function openSecurityEntries(lienStack: CanonicalLienStackEntry[]): CanonicalLienStackEntry[] {
+  return lienStack.filter((entry) => entry.status === "OPEN" && isSecurityEntry(entry));
+}
 
-  const first = openSecurity.find((entry) => entry.chronologicalPosition === 1 && entry.priorityConfidence === "high");
-  return first?.instrumentId || null;
+export function automaticTargetSecurityLienId(lienStack: CanonicalLienStackEntry[], titleSummaryMortgageNumbers: string[] = []): string | null {
+  const open = openSecurityEntries(lienStack);
+  if (open.length === 1) return open[0].instrumentId;
+  if (!open.length) return null;
+  const summaryNumbers = new Set(titleSummaryMortgageNumbers.map(normalizeInstrumentNumber).filter(Boolean));
+  if (!summaryNumbers.size) return null;
+  const summaryOpen = open.filter((entry) => summaryNumbers.has(normalizeInstrumentNumber(entry.instrumentNumber)));
+  if (summaryOpen.length !== open.length) return null;
+  const ordered = chronological(open);
+  const priority = positionBasis(ordered);
+  if (priority.confidence !== "high") return null;
+  return ordered[0]?.instrumentId || null;
 }
 
 export function developedPositionForTarget(
-  stack: CanonicalLienStackEntry[],
+  lienStack: CanonicalLienStackEntry[],
   targetInstrumentId: string | null,
-  explicitPosition?: { value: string; hasEvidence: boolean },
-): { value: string; basis: LienPriorityBasis; confidence: LienPriorityConfidence; evidence: EvidenceRef[]; evidenceIds: string[]; warning: string } {
-  const target = targetInstrumentId ? stack.find((entry) => entry.instrumentId === targetInstrumentId) : undefined;
-  if (explicitPosition?.value && !/^needs review$/i.test(explicitPosition.value) && explicitPosition.hasEvidence) {
-    return {
-      value: explicitPosition.value,
-      basis: "EXPLICIT",
-      confidence: "high",
-      evidence: target?.evidence || [],
-      evidenceIds: target?.evidenceIds || [],
-      warning: target?.positionLabel && target.positionLabel !== "Needs review" && target.positionLabel.toLowerCase() !== explicitPosition.value.toLowerCase()
-        ? `Expressly stated position (${explicitPosition.value}) differs from first-in-time screening position (${target.positionLabel}); examiner priority review required.`
-        : target?.priorityWarning || "",
-    };
-  }
-  if (!target || target.status !== "OPEN" || !target.chronologicalPosition) return { value: "Needs review", basis: "UNRESOLVED", confidence: "low", evidence: target?.evidence || [], evidenceIds: target?.evidenceIds || [], warning: target?.priorityWarning || "Target lien is not resolved in the open-lien stack." };
-  const targetPosition = target.chronologicalPosition;
-  const throughTarget = stack.filter((entry) => entry.status === "OPEN" && entry.chronologicalPosition != null && entry.chronologicalPosition <= targetPosition);
-  const evidence = uniqueEvidence(throughTarget);
+): { value: string; basis: LienPriorityBasis; confidence: LienPriorityConfidence; warning: string | null; evidence: EvidenceRef[]; evidenceIds: string[] } {
+  if (!targetInstrumentId) return { value: "Needs review", basis: "UNRESOLVED", confidence: "low", warning: "Target lien is unresolved.", evidence: [], evidenceIds: [] };
+  const target = lienStack.find((entry) => entry.instrumentId === targetInstrumentId);
+  if (!target || target.status !== "OPEN") return { value: "Needs review", basis: "UNRESOLVED", confidence: "low", warning: "Target lien is not a confirmed open lien identity.", evidence: target?.evidence || [], evidenceIds: target?.evidenceIds || [] };
+  const active = chronological(lienStack.filter((entry) => entry.status === "OPEN"));
+  const index = active.findIndex((entry) => entry.instrumentId === targetInstrumentId);
+  if (index < 0) return { value: "Needs review", basis: "UNRESOLVED", confidence: "low", warning: "Target lien was not found in the confirmed open lien stack.", evidence: target.evidence, evidenceIds: target.evidenceIds };
+  const priority = positionBasis(active);
   return {
-    value: target.positionLabel,
-    basis: "FIRST_IN_TIME",
-    confidence: target.priorityConfidence,
-    evidence: evidence.refs,
-    evidenceIds: evidence.ids,
-    warning: target.priorityWarning,
+    value: developedPositionLabel(index),
+    basis: priority.basis,
+    confidence: priority.confidence,
+    warning: priority.warning,
+    evidence: target.evidence,
+    evidenceIds: target.evidenceIds,
   };
 }
 
-function requirement(code: string, type: ForeclosureRequirement["type"], severity: ForeclosureRequirement["severity"], title: string, action: string, entries: CanonicalLienStackEntry[] = []): ForeclosureRequirement {
-  const evidence = uniqueEvidence(entries);
-  return { code, type, severity, title, action, evidence: evidence.refs, evidenceIds: evidence.ids };
+function req(
+  type: ForeclosureRequirement["type"],
+  title: string,
+  action: string,
+  blocking: boolean,
+  evidence: EvidenceRef[] = [],
+  evidenceIds: string[] = [],
+): ForeclosureRequirement {
+  return { type, title, action, blocking, evidence, evidenceIds, scope: "TITLE_PACKET" };
 }
 
 export function buildForeclosureAnalysis(args: {
@@ -285,46 +251,46 @@ export function buildForeclosureAnalysis(args: {
   targetPositionConfidence: LienPriorityConfidence;
   selectionRequired: boolean;
 }): ForeclosureAnalysis {
-  const open = args.lienStack.filter((entry) => entry.status === "OPEN");
+  const active = chronological(args.lienStack.filter((entry) => entry.status === "OPEN"));
   const unknown = args.lienStack.filter((entry) => entry.status === "UNKNOWN");
-  const target = args.targetInstrumentId ? open.find((entry) => entry.instrumentId === args.targetInstrumentId) : undefined;
-  const targetPosition = target?.chronologicalPosition ?? null;
-  const senior = targetPosition ? open.filter((entry) => entry.chronologicalPosition != null && entry.chronologicalPosition < targetPosition) : [];
-  const junior = targetPosition ? open.filter((entry) => entry.chronologicalPosition != null && entry.chronologicalPosition > targetPosition) : [];
+  const targetIndex = args.targetInstrumentId ? active.findIndex((entry) => entry.instrumentId === args.targetInstrumentId) : -1;
+  const seniorLienIds = targetIndex >= 0 ? active.slice(0, targetIndex).map((entry) => entry.instrumentId) : [];
+  const juniorLienIds = targetIndex >= 0 ? active.slice(targetIndex + 1).map((entry) => entry.instrumentId) : [];
   const requirements: ForeclosureRequirement[] = [];
 
-  if (args.selectionRequired || !target) requirements.push(requirement("TARGET_LIEN_SELECTION", "EVIDENCE", "BLOCKING", "Foreclosure target lien is unresolved.", "Develop the controlling security lien from packet evidence before relying on amount, position, payoff, notice, or cure analysis. Examiner selection should be used only when the packet cannot support an automatic target.", open.concat(unknown)));
-  if (target && (!clean(args.targetAmount) || /^needs review$/i.test(args.targetAmount))) requirements.push(requirement("TARGET_LIEN_AMOUNT", "EVIDENCE", "BLOCKING", "Target lien amount is unresolved.", "Confirm the original/recorded lien amount from the controlling security instrument or title-report source evidence.", [target]));
-  if (target && (!clean(args.targetPosition) || /^needs review$/i.test(args.targetPosition))) requirements.push(requirement("TARGET_LIEN_POSITION", "PRIORITY_REVIEW", "BLOCKING", "Target lien position cannot be developed from the available recording evidence.", "Resolve lien-status, recording-date, sequence, or priority evidence before foreclosure treatment is finalized.", [target]));
-  if (target?.priorityWarning) requirements.push(requirement("PRIORITY_EXCEPTION_REVIEW", "PRIORITY_REVIEW", "REVIEW", target.priorityWarning, "Apply the governing state/jurisdiction priority rule before treating the chronological stack as legal priority.", [target]));
-  if (args.targetPositionBasis === "FIRST_IN_TIME" && args.targetPositionConfidence !== "high") requirements.push(requirement("FIRST_IN_TIME_CONFIDENCE", "PRIORITY_REVIEW", "REVIEW", "Lien position is developed from first-in-time chronology but carries a priority exception or sequencing uncertainty.", "Examiner should confirm the applicable priority exception before foreclosure referral/export is finalized.", target ? [target] : []));
-
+  if (args.selectionRequired || !args.targetInstrumentId) {
+    requirements.push(req("TARGET_SELECTION", "Target lien requires examiner selection", "Select the exact mortgage/deed-of-trust being foreclosed before senior/junior and cure analysis is finalized.", true));
+  }
+  if (!args.targetAmount || /^needs review$/i.test(args.targetAmount)) {
+    requirements.push(req("PAYOFF_OR_AMOUNT", "Target lien amount is unresolved", "Confirm the recorded/original secured amount from the target security instrument or controlling title summary before export.", true));
+  }
+  if (!args.targetPosition || /^needs review$/i.test(args.targetPosition)) {
+    requirements.push(req("PRIORITY_REVIEW", "Target lien position is unresolved", "Develop target lien priority from reliable recording chronology and review any statutory priority exceptions.", true));
+  } else if (args.targetPositionBasis === "FIRST_IN_TIME" && args.targetPositionConfidence !== "high") {
+    requirements.push(req("PRIORITY_REVIEW", "First-in-time position requires examiner priority confirmation", "Review the flagged priority exception or same-day/recording-sequence issue before treating the developed position as final legal priority.", true));
+  }
+  for (const id of seniorLienIds) {
+    const entry = args.lienStack.find((item) => item.instrumentId === id);
+    if (!entry) continue;
+    requirements.push(req("SENIOR_LIEN", `Senior ${entry.instrumentType} ${entry.instrumentNumber}`, "Confirm payoff/survival treatment and any required foreclosure notice or cure for this senior interest.", false, entry.evidence, entry.evidenceIds));
+  }
+  for (const id of juniorLienIds) {
+    const entry = args.lienStack.find((item) => item.instrumentId === id);
+    if (!entry) continue;
+    requirements.push(req("JUNIOR_LIEN", `Junior ${entry.instrumentType} ${entry.instrumentNumber}`, "Confirm jurisdiction-specific notice, extinguishment/survival, and release/curative requirements for this junior interest.", false, entry.evidence, entry.evidenceIds));
+  }
   for (const entry of unknown) {
-    requirements.push(requirement(`LIEN_STATUS_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "EVIDENCE", "REVIEW", `Lien status unresolved: ${entry.instrumentType} ${entry.instrumentNumber} · ${entry.amount}.`, "Determine whether this lien identity is open, released, satisfied, or otherwise no longer affecting title before relying on the final lien count or priority stack.", [entry]));
-  }
-  for (const entry of senior) {
-    requirements.push(requirement(`SENIOR_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "PAYOFF_REVIEW", "REVIEW", `Senior open encumbrance: ${entry.positionLabel} · ${entry.instrumentType} ${entry.instrumentNumber} · ${entry.amount}.`, "Confirm whether the foreclosure will remain subject to this senior interest or whether payoff, subordination, release, or other treatment is required for the intended foreclosure outcome.", [entry]));
-  }
-  for (const entry of junior) {
-    requirements.push(requirement(`JUNIOR_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "NOTICE_REVIEW", "REVIEW", `Junior open encumbrance: ${entry.positionLabel} · ${entry.instrumentType} ${entry.instrumentNumber} · ${entry.amount}.`, "Confirm required notice, joinder, service, and foreclosure treatment for this junior interest under the governing jurisdiction and process.", [entry]));
-  }
-  for (const entry of open.filter((candidate) => candidate.priorityWarning && candidate.instrumentId !== target?.instrumentId)) {
-    requirements.push(requirement(`STACK_EXCEPTION_${normalizeInstrumentNumber(entry.instrumentNumber) || entry.instrumentId}`, "PRIORITY_REVIEW", "REVIEW", `${entry.instrumentType} ${entry.instrumentNumber}: ${entry.priorityWarning}`, "Resolve the priority exception before relying on the lien-stack order for foreclosure treatment.", [entry]));
+    requirements.push(req("LIEN_STATUS", `${entry.instrumentType} ${entry.instrumentNumber} has unresolved lien status`, "Determine whether this true lien identity is open, released, satisfied, expired, or otherwise non-enforceable before final priority/cure analysis.", true, entry.evidence, entry.evidenceIds));
   }
 
-  const deduped = [...new Map(requirements.map((item) => [item.code, item])).values()];
   return {
-    method: "FIRST_IN_TIME_WITH_EXCEPTION_GATES",
-    status: deduped.some((item) => item.severity === "BLOCKING") ? "CURATIVE_REQUIRED" : deduped.length ? "REVIEW" : "READY",
-    targetInstrumentId: target?.instrumentId || null,
-    targetAmount: args.targetAmount,
-    targetPosition: args.targetPosition,
-    targetPositionBasis: args.targetPositionBasis,
-    targetPositionConfidence: args.targetPositionConfidence,
-    seniorLienIds: senior.map((entry) => entry.instrumentId),
-    juniorLienIds: junior.map((entry) => entry.instrumentId),
-    openLienCount: open.length,
     lienStack: args.lienStack,
-    requirements: deduped,
+    openLienCount: active.length,
+    unresolvedLienCount: unknown.length,
+    releasedLienCount: args.lienStack.filter((entry) => entry.status === "RELEASED").length,
+    seniorLienIds,
+    juniorLienIds,
+    requirements,
+    status: requirements.some((item) => item.blocking) ? "CURATIVE_REQUIRED" : "READY",
   };
 }
