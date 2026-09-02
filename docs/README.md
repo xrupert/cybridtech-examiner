@@ -1,4 +1,4 @@
-# CybridTech Examiner Documentation
+# Cybrid Title Examiner Documentation
 
 - `MVP_ACCEPTANCE.md` — end-to-end acceptance standard for both directions.
 - `RUN_SHEET_COLUMNS.md` — provisional reverse-build Run Sheet export columns.
