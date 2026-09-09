@@ -24,7 +24,13 @@ export interface CanonicalReviewDiagnostics {
   packetHash: string;
   pageCount: number;
   nativeTextCoverage: number;
+  textCoverage: number;
+  initialLowTextPages: number[];
   lowTextPages: number[];
+  ocrRecoveredPages: number[];
+  ocrSkippedPages: number[];
+  blankPages: number[];
+  ocrProvidersUsed: string[];
   extractionMode: string;
   extractionCacheHit: boolean;
   extractionMs: number;
@@ -34,6 +40,7 @@ export interface CanonicalReviewDiagnostics {
   checkModelMs: number;
   evidenceNodes: number;
   nativeVerifiedEvidenceNodes: number;
+  textVerifiedEvidenceNodes: number;
   titleSummaryReconciliation: RunSheetReconciliation;
   runSheetReconciliation: RunSheetReconciliation;
   pipeline: PipelineState;
@@ -129,8 +136,14 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
   const diagnostics: CanonicalReviewDiagnostics = {
     packetHash: prepared.packetHash,
     pageCount: prepared.ledger.pageCount,
-    nativeTextCoverage: prepared.ledger.textCoverage,
+    nativeTextCoverage: prepared.ledger.nativeTextCoverage,
+    textCoverage: prepared.ledger.textCoverage,
+    initialLowTextPages: prepared.ledger.initialLowTextPages,
     lowTextPages: prepared.ledger.lowTextPages,
+    ocrRecoveredPages: prepared.ledger.ocrRecoveredPages,
+    ocrSkippedPages: prepared.ledger.ocrSkippedPages,
+    blankPages: prepared.ledger.blankPages,
+    ocrProvidersUsed: prepared.ledger.ocrProvidersUsed,
     extractionMode: extracted.ledger.extractionMode,
     extractionCacheHit: prepared.cacheHit,
     extractionMs: prepared.extractionMs,
@@ -140,6 +153,7 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     checkModelMs: checker.modelMs,
     evidenceNodes: extracted.ledger.evidence.length,
     nativeVerifiedEvidenceNodes: extracted.ledger.evidence.filter((node) => node.nativeVerified).length,
+    textVerifiedEvidenceNodes: extracted.ledger.evidence.filter((node) => node.textVerified).length,
     titleSummaryReconciliation,
     runSheetReconciliation,
     pipeline,
@@ -154,7 +168,12 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     county: review.record.county.value,
     pageCount: prepared.ledger.pageCount,
     extractionMode: extracted.ledger.extractionMode,
+    nativeTextCoverage: prepared.ledger.nativeTextCoverage,
+    textCoverage: prepared.ledger.textCoverage,
+    ocrRecoveredPages: prepared.ledger.ocrRecoveredPages,
+    ocrProvidersUsed: prepared.ledger.ocrProvidersUsed,
     evidenceNodes: extracted.ledger.evidence.length,
+    textVerifiedEvidenceNodes: diagnostics.textVerifiedEvidenceNodes,
     reportRunSheetDetected: record.titleSummary.detected,
     reportRunSheetPages: [record.titleSummary.pageStart, record.titleSummary.pageEnd],
     distinctRunSheetDetected: record.runSheet.detected,
