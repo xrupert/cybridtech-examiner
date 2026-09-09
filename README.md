@@ -14,17 +14,18 @@ A complete title-report packet goes in. Cybrid Title:
 
 1. identifies the exact packet by SHA-256;
 2. extracts page-addressable native PDF text when coverage is reliable;
-3. uses OpenAI PDF/vision as the current fallback for scan/image-heavy packets;
-4. auto-detects state and the supported order profile from opening title-summary pages when possible;
-5. identifies a functional Run Sheet/title-summary section by structure, not only by literal label;
-6. applies the loaded VERA/RCS/Quick Reference/Legal Description rules;
-7. runs one GPT-5.6 Sol forensic review pass;
-8. applies the deterministic server critic/evidence gate;
-9. projects grounded exceptions into QC/curative readiness;
-10. renders the review plus configurable CSV/JSON data export;
-11. stores a private review receipt.
+3. renders only low-text/non-native pages and runs a bounded page OCR recovery chain: TurboOCR when a trusted GPU endpoint is configured, then local Tesseract when available, then OpenAI page vision as the final page-level recovery provider;
+4. falls back to whole-PDF OpenAI vision only when one or more nonblank pages remain unresolved after page recovery;
+5. auto-detects state and the supported order profile from opening title-summary pages when possible;
+6. identifies a functional Run Sheet/title-summary section by structure, not only by literal label;
+7. applies the loaded VERA/RCS/Quick Reference/Legal Description rules;
+8. runs one GPT-5.6 Sol forensic review pass over the page-addressable extraction ledger;
+9. applies the deterministic server critic/evidence gate;
+10. projects grounded exceptions into QC/curative readiness;
+11. renders the review plus configurable CSV/JSON data export;
+12. stores a private review receipt.
 
-The current Review fast path is deliberately **one full-packet Sol pass + deterministic server critic**, not two full-PDF AI passes.
+The current Review fast path is deliberately **page extraction/recovery → one structured Sol extraction/check path → deterministic server critic**, not two blind full-PDF AI passes.
 
 ### Build Run Sheet
 
@@ -51,7 +52,39 @@ Source title documents can be uploaded to build an evidence-backed Run Sheet. Th
 - state-law dependencies are not invented when no authoritative state rule is loaded;
 - Q4–Q12 and Q17–Q20 control the automated critical verdict.
 
-The deterministic critic currently verifies evidence structure and fails unsupported PASS/FAIL closed. Native-text quote-to-page verification and a dedicated scanned-page OCR ledger remain architecture-hardening work; see `docs/ARCHITECTURE_READINESS_AUDIT.md`.
+The page extraction ledger now records native/OCR source, confidence, provider attempts, blank pages, unresolved pages, and quote-to-page verification. Native and OCR-backed page text can therefore be checked independently before downstream conclusions are treated as grounded. Whole-PDF vision remains a last-resort compatibility path and does not receive the same independent page-text verification guarantee.
+
+## OCR provider strategy
+
+The OCR layer is intentionally provider-agnostic and fail-closed:
+
+`native PDF text → TurboOCR (if configured) → Tesseract CLI (if available) → OpenAI page vision → whole-PDF OpenAI vision only if still unresolved`
+
+TurboOCR is best used as a separately hosted, private Linux/NVIDIA service. Tesseract is the local/on-prem CPU fallback. OpenAI page vision keeps the deployed Vercel path functional when neither local OCR provider is available. Semantica was evaluated for this work, but it is not an OCR engine and is not added as a Python runtime dependency to the Next.js application; its provenance/traceability ideas are represented in the versioned per-page extraction ledger instead.
+
+Optional environment variables:
+
+```bash
+# Private TurboOCR service, e.g. your own GPU host
+TURBOOCR_URL=https://your-private-ocr-host
+TURBOOCR_API_KEY=optional
+
+# Local/on-prem Tesseract 5 CLI
+TESSERACT_CMD=tesseract
+TESSERACT_LANG=eng
+TESSERACT_PSM=3
+
+# Provider order and guardrails
+CYBRID_PAGE_OCR_ORDER=turboocr,tesseract,openai-page-vision
+CYBRID_OCR_RENDER_SCALE=2.75
+CYBRID_OCR_CONCURRENCY=2
+CYBRID_MAX_OCR_PAGES=80
+CYBRID_PAGE_OCR_TIMEOUT_MS=45000
+CYBRID_PAGE_OCR_MIN_CHARS=32
+CYBRID_PAGE_OCR_MIN_CONFIDENCE=0.50
+```
+
+No external TurboOCR service is called unless `TURBOOCR_URL` is explicitly configured. If the Tesseract executable is unavailable, the process marks it unavailable after the first failed launch and continues to page vision rather than repeatedly failing every page.
 
 ## Packet / matter / review identity
 
@@ -81,10 +114,11 @@ Additional CSV/JSON columns can be toggled without changing the review engine. A
 
 ## Architecture / harness
 
-The `architect/full-system-readiness` work adds:
+The architecture work adds:
 
 - explicit legal pipeline transitions;
 - deterministic architecture regression harness;
+- deterministic OCR routing/TSV parsing harness;
 - CI build gate;
 - an architecture readiness audit with RED/YELLOW/GREEN findings.
 
@@ -97,7 +131,7 @@ npm run typecheck
 npm run build
 ```
 
-Build success proves code-level contracts, **not title accuracy**. Production accuracy requires a secure human-reviewed golden packet corpus.
+Build success proves code-level contracts, **not title accuracy**. Production accuracy requires a secure human-reviewed golden packet corpus, including image-heavy/scanned packets.
 
 ## Environment
 
