@@ -167,7 +167,7 @@ async function runTurboOcr(image: Buffer): Promise<ProviderTextResult> {
   const response = await fetch(`${baseUrl}/ocr/raw?layout=1`, {
     method: "POST",
     headers,
-    body: new Blob([image], { type: "image/png" }),
+    body: new Blob([new Uint8Array(image)], { type: "image/png" }),
     signal: AbortSignal.timeout(timeoutMs()),
   });
   if (!response.ok) {
