@@ -77,7 +77,8 @@ export function buildEvidenceLedger(args: {
     seen.add(key);
     const page = args.nativeLedger?.pages.find((candidate) => candidate.page === anchor.page);
     const textVerified = Boolean(page && !page.needsVisualReview && page.text && fuzzyContained(anchor.quote, page.text));
-    const verificationSource = textVerified ? verificationSourceForPage(page?.textSource) : undefined;
+    // Older deterministic fixtures/pre-v4 ledgers did not carry textSource; those pages were native by definition.
+    const verificationSource = textVerified ? verificationSourceForPage(page?.textSource || "native") : undefined;
     const nativeVerified = Boolean(textVerified && verificationSource === "native");
     evidence.push({
       id: evidenceId(args.packetHash, anchor),
