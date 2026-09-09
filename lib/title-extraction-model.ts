@@ -111,14 +111,16 @@ export interface EvidenceNode {
   source: EvidenceSource;
   confidence: number;
   nativeVerified: boolean;
+  textVerified: boolean;
+  verificationSource?: EvidenceSource;
 }
 
 export interface TitleEvidenceLedger {
-  version: 1;
+  version: 2;
   packetHash: string;
   sourceFile: string;
   pageCount: number;
-  extractionMode: "native-text" | "openai-pdf-vision" | "pasted-text";
+  extractionMode: "native-text" | "hybrid-page-ocr" | "openai-pdf-vision" | "pasted-text";
   evidence: EvidenceNode[];
   runSheetPages: number[];
   createdAt: string;
