@@ -1,5 +1,7 @@
 import type { EvidenceSource } from "./vera";
 
+export type EvidenceVerificationSource = "native" | "tesseract" | "turboocr" | "openai-page-vision";
+
 export interface RawEvidenceAnchor {
   quote: string;
   page: number;
@@ -112,7 +114,7 @@ export interface EvidenceNode {
   confidence: number;
   nativeVerified: boolean;
   textVerified: boolean;
-  verificationSource?: EvidenceSource;
+  verificationSource?: EvidenceVerificationSource;
 }
 
 export interface TitleEvidenceLedger {
