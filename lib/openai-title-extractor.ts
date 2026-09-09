@@ -1,6 +1,6 @@
 import type { PreparedPacket } from "./document-engine";
 import { buildEvidenceLedger } from "./title-evidence-ledger";
-import type { ExtractedTitlePacket, RawTitlePacketExtraction } from "./title-extraction-model";
+import type { ExtractedTitlePacket, RawTitlePacketExtraction, TitleEvidenceLedger } from "./title-extraction-model";
 
 const OPENAI_API = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-5.6-sol";
@@ -77,7 +77,7 @@ function instructions(hints: ExtractionHints): string {
 
 SOURCE RULES
 - Read the COMPLETE packet, including the opening title report/title-search summary and every supporting recorded document or search result.
-- Physical PDF page numbers are 1-based. If text input contains === PDF PAGE N === markers, those markers control page citations.
+- Physical PDF page numbers are 1-based. If text input contains === PDF PAGE N === markers, those markers control page citations. TEXT SOURCE metadata in a page marker is provenance only; never treat it as documentary content.
 - Every non-empty extracted fact must carry at least one short exact source quote, physical page, document type, and confidence.
 - Use value "Not Stated" with an empty evidence array when the packet does not state a fact.
 - Never use current owner as borrower unless the packet expressly identifies that person as borrower/mortgagor.
@@ -122,10 +122,36 @@ async function responseExtraction(args: { fileId?: string; text?: string; hints:
 }
 
 export async function extractPdfTitlePacket(buffer: ArrayBuffer, sourceFile: string, prepared: PreparedPacket, hints: ExtractionHints = {}): Promise<ExtractedTitlePacket> {
-  const model = titleExtractionModel(); let result: { raw: RawTitlePacketExtraction; modelMs: number; usage: unknown }; let extractionMode: "native-text" | "openai-pdf-vision";
-  if (prepared.extractionMode === "native-text" && prepared.pageDelimitedText) { extractionMode = "native-text"; result = await responseExtraction({ text: prepared.pageDelimitedText, hints, model }); }
-  else { extractionMode = "openai-pdf-vision"; const fileId = await uploadPdf(buffer, sourceFile); try { result = await responseExtraction({ fileId, hints, model }); } finally { await deleteFile(fileId); } }
+  const model = titleExtractionModel();
+  let result: { raw: RawTitlePacketExtraction; modelMs: number; usage: unknown };
+  let extractionMode: TitleEvidenceLedger["extractionMode"];
+
+  if (prepared.pageDelimitedText && prepared.extractionMode !== "openai-pdf-fallback") {
+    extractionMode = prepared.extractionMode === "hybrid-page-ocr" ? "hybrid-page-ocr" : "native-text";
+    result = await responseExtraction({ text: prepared.pageDelimitedText, hints, model });
+  } else {
+    extractionMode = "openai-pdf-vision";
+    const fileId = await uploadPdf(buffer, sourceFile);
+    try { result = await responseExtraction({ fileId, hints, model }); } finally { await deleteFile(fileId); }
+  }
+
   const ledger = buildEvidenceLedger({ packetHash: prepared.packetHash, sourceFile, pageCount: prepared.ledger.pageCount, extractionMode, extraction: result.raw, nativeLedger: prepared.ledger });
-  console.info("CYBRID_TITLE_EXTRACTION_MODEL_COMPLETE", JSON.stringify({ sourceFile, packetHash: prepared.packetHash, model, reasoningEffort: "medium", extractionMode, pageCount: prepared.ledger.pageCount, evidenceNodes: ledger.evidence.length, titleSummaryDetected: result.raw.runSheet.detected, modelMs: result.modelMs, usage: result.usage }));
+  console.info("CYBRID_TITLE_EXTRACTION_MODEL_COMPLETE", JSON.stringify({
+    sourceFile,
+    packetHash: prepared.packetHash,
+    model,
+    reasoningEffort: "medium",
+    extractionMode,
+    pageCount: prepared.ledger.pageCount,
+    nativeTextCoverage: prepared.ledger.nativeTextCoverage,
+    textCoverage: prepared.ledger.textCoverage,
+    ocrRecoveredPages: prepared.ledger.ocrRecoveredPages,
+    ocrProvidersUsed: prepared.ledger.ocrProvidersUsed,
+    evidenceNodes: ledger.evidence.length,
+    textVerifiedEvidenceNodes: ledger.evidence.filter((node) => node.textVerified).length,
+    titleSummaryDetected: result.raw.runSheet.detected,
+    modelMs: result.modelMs,
+    usage: result.usage,
+  }));
   return { extraction: result.raw, ledger, model, modelMs: result.modelMs };
 }
