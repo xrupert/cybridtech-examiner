@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { PacketExtractionLedger } from "./document-engine";
-import type { EvidenceNode, RawEvidenceAnchor, RawTitlePacketExtraction, TitleEvidenceLedger } from "./title-extraction-model";
+import type { PacketExtractionLedger, PageTextSource } from "./document-engine";
+import type { EvidenceNode, EvidenceVerificationSource, RawEvidenceAnchor, RawTitlePacketExtraction, TitleEvidenceLedger } from "./title-extraction-model";
 import type { EvidenceRef, EvidenceSource } from "./vera";
 
 function normalize(value: string): string {
@@ -48,9 +48,14 @@ function collectAnchors(raw: RawTitlePacketExtraction): RawEvidenceAnchor[] {
 }
 
 function sourceForMode(mode: TitleEvidenceLedger["extractionMode"]): EvidenceSource {
-  if (mode === "native-text") return "native";
+  if (mode === "openai-pdf-vision") return "openai-file";
   if (mode === "pasted-text") return "pasted";
-  return "openai-file";
+  return "native";
+}
+
+function verificationSourceForPage(source: PageTextSource | undefined): EvidenceVerificationSource | undefined {
+  if (source === "native" || source === "tesseract" || source === "turboocr" || source === "openai-page-vision") return source;
+  return undefined;
 }
 
 export function buildEvidenceLedger(args: {
@@ -70,8 +75,10 @@ export function buildEvidenceLedger(args: {
     const key = anchorKey(anchor);
     if (seen.has(key)) continue;
     seen.add(key);
-    const nativePage = args.nativeLedger?.pages.find((page) => page.page === anchor.page);
-    const nativeVerified = Boolean(nativePage && !nativePage.needsVisualReview && fuzzyContained(anchor.quote, nativePage.text));
+    const page = args.nativeLedger?.pages.find((candidate) => candidate.page === anchor.page);
+    const textVerified = Boolean(page && !page.needsVisualReview && page.text && fuzzyContained(anchor.quote, page.text));
+    const verificationSource = textVerified ? verificationSourceForPage(page?.textSource) : undefined;
+    const nativeVerified = Boolean(textVerified && verificationSource === "native");
     evidence.push({
       id: evidenceId(args.packetHash, anchor),
       packetHash: args.packetHash,
@@ -83,6 +90,8 @@ export function buildEvidenceLedger(args: {
       source,
       confidence: Math.max(0, Math.min(1, Number.isFinite(anchor.confidence) ? anchor.confidence : 0.5)),
       nativeVerified,
+      textVerified,
+      verificationSource,
     });
   }
 
@@ -91,7 +100,7 @@ export function buildEvidenceLedger(args: {
     : [];
 
   return {
-    version: 1,
+    version: 2,
     packetHash: args.packetHash,
     sourceFile: args.sourceFile,
     pageCount: args.pageCount,
