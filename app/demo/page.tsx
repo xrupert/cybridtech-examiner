@@ -288,9 +288,9 @@ function ExaminerWorkbench() {
   const selectedReviewComplete = selected ? pendingVera(selected).length === 0 && pendingSupplemental(selected).length === 0 && !selected.review?.qc.curativeIssues.some((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW") : false;
 
   return <div className={styles.shell}>
-    <header className={styles.nav}><div className={styles.brand}><Logo height={40} /><span className={styles.brandName}>Cybrid Title</span></div><span className={styles.navTag}>Title Examination · Vera 20 · Evidence Reconciliation · Curative</span></header>
+    <header className={styles.nav}><div className={styles.brand}><Logo height={72} /><span className={styles.brandName}>Cybrid Title</span></div><span className={styles.navTag}>Title Examination · Vera 20 · Evidence Reconciliation · Curative</span></header>
     <main className={styles.main}>
-      <div className={styles.printBrand}><div className={styles.printBrandIdentity}><Logo height={54} /><div><strong>Cybrid Title</strong><span>Evidence-backed Title Examination</span></div></div><div className={styles.printBrandMeta}>Examiner Review{selected?.review ? ` · ${selected.review.record.tsNumber.value}` : ""}</div></div>
+      <div className={styles.printBrand}><div className={styles.printBrandIdentity}><Logo height={90} /><div><strong>Cybrid Title</strong><span>Evidence-backed Title Examination</span></div></div><div className={styles.printBrandMeta}>Examiner Review{selected?.review ? ` · ${selected.review.record.tsNumber.value}` : ""}</div></div>
       <section className={styles.hero}><div><p className={styles.eyebrow}>Title examiner intelligence workbench</p><h1>Find the title truth. Verify the source. Resolve what prevents the next action.</h1></div><p>Cybrid prepares the Vera 20 examination, reconciles the report to the recorded source documents, develops lien identity and priority only when the order requires it, and turns unresolved findings into a clear examiner or curative work queue before export.</p></section>
 
       <section className={`${styles.panel} ${styles.setupPanel}`}><div className={styles.setup}>
