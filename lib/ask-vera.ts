@@ -96,6 +96,29 @@ function relevantInstruments(question: string, dossier: ReviewDossier) {
   return matches.length ? matches : dossier.review.record.instruments.slice(0, 12);
 }
 
+function relevantGraph(question: string, dossier: ReviewDossier) {
+  if (!dossier.graph) return { nodes: [], edges: [] };
+  const qs = tokens(question);
+  const scored = dossier.graph.nodes.map((node) => {
+    const value = normalize(`${node.type} ${node.label} ${JSON.stringify(node.attributes)}`);
+    const score = qs.reduce((sum, token) => sum + (value.includes(token) ? (token.length > 7 ? 2 : 1) : 0), 0);
+    return { node, score };
+  }).sort((a, b) => b.score - a.score);
+  const seeds = scored.filter((item) => item.score > 0).slice(0, 16).map((item) => item.node);
+  const selected = new Map(seeds.map((node) => [node.id, node]));
+  const neighborEdges = dossier.graph.edges.filter((edge) => selected.has(edge.from) || selected.has(edge.to)).slice(0, 48);
+  for (const edge of neighborEdges) {
+    const from = dossier.graph.nodes.find((node) => node.id === edge.from);
+    const to = dossier.graph.nodes.find((node) => node.id === edge.to);
+    if (from && selected.size < 28) selected.set(from.id, from);
+    if (to && selected.size < 28) selected.set(to.id, to);
+  }
+  return {
+    nodes: [...selected.values()].map((node) => ({ id: node.id, type: node.type, label: node.label, attributes: node.attributes, evidenceIds: node.evidenceIds })),
+    edges: neighborEdges.map((edge) => ({ from: edge.from, to: edge.to, type: edge.type, label: edge.label, evidenceIds: edge.evidenceIds })),
+  };
+}
+
 function retrieve(question: string, dossier: ReviewDossier) {
   const pages = dossier.pageLedger.pages
     .map((page) => ({ page, score: pageScore(question, page, dossier) }))
@@ -108,6 +131,7 @@ function retrieve(question: string, dossier: ReviewDossier) {
     pages,
     checks: relevantChecks(question, dossier),
     instruments: relevantInstruments(question, dossier),
+    graph: relevantGraph(question, dossier),
   };
 }
 
@@ -178,6 +202,7 @@ export async function askVera(reviewId: string, question: string): Promise<AskVe
     foreclosureReadiness: dossier.review.qc.foreclosureReadiness,
     relevantChecks: retrieved.checks,
     relevantInstruments: retrieved.instruments,
+    relevantGraph: retrieved.graph,
     coreRecord: {
       orderNumber: dossier.review.record.orderNumber,
       propertyAddress: dossier.review.record.propertyAddress,
@@ -201,10 +226,10 @@ export async function askVera(reviewId: string, question: string): Promise<AskVe
       store: false,
       max_output_tokens: 4500,
       reasoning: { effort: "medium" },
-      instructions: `You are Ask Vera, an evidence-only title packet examiner. Answer the user's question only from the supplied canonical review facts and physical-page excerpts. Never use outside knowledge to fill a documentary gap. Never infer a negative from absence. Every affirmative documentary answer must cite one or more short exact quotes from the supplied physical pages. If the answer depends on an unreadable page, conflicting evidence, or evidence not present in the supplied pages, set cannotConfirm=true and explain exactly what must be manually checked. Do not treat OCR confidence as legal certainty. A substantive title FAIL requires readable documentary evidence; unreadability alone is manual review, not a defect.`,
+      instructions: `You are Ask Vera, an evidence-only title packet examiner. Answer the user's question only from the supplied canonical review facts, deterministic title graph, and physical-page excerpts. Graph edges help navigate relationships but they do not substitute for physical-page proof. Never use outside knowledge to fill a documentary gap. Never infer a negative from absence. Every affirmative documentary answer must cite one or more short exact quotes from the supplied physical pages. If the answer depends on an unreadable page, conflicting evidence, or evidence not present in the supplied pages, set cannotConfirm=true and explain exactly what must be manually checked. Do not treat OCR confidence as legal certainty. A substantive title FAIL requires readable documentary evidence; unreadability alone is manual review, not a defect.`,
       input: [{
         role: "user",
-        content: [{ type: "input_text", text: `QUESTION\n${cleanQuestion}\n\nCANONICAL REVIEW SNAPSHOT\n${JSON.stringify(context)}\n\nRETRIEVED PHYSICAL PAGES\n${pageContext(retrieved.pages)}` }],
+        content: [{ type: "input_text", text: `QUESTION\n${cleanQuestion}\n\nCANONICAL REVIEW + GRAPH SNAPSHOT\n${JSON.stringify(context)}\n\nRETRIEVED PHYSICAL PAGES\n${pageContext(retrieved.pages)}` }],
       }],
       text: { verbosity: "low", format: { type: "json_schema", name: "ask_vera_answer", strict: true, schema: answerSchema } },
     }),
