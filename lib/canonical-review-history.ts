@@ -1,10 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { list, put } from "@vercel/blob";
 import { AUDIT_RULE_VERSION } from "./audit-rules";
+import { clientBlobPrefix } from "./client-instance";
 import type { TitleReviewResult } from "./title-domain";
-
-const RECEIPT_PREFIX = "cybrid-title/review-receipts";
-const INDEX_PREFIX = "cybrid-title/canonical-review-index-v1";
 
 export interface CanonicalReviewTelemetry {
   pageCount: number;
@@ -17,6 +15,9 @@ export interface CanonicalReviewTelemetry {
   extractionModel: string;
   checkModel: string;
 }
+
+function receiptPrefix(): string { return clientBlobPrefix("review-receipts"); }
+function indexPrefix(): string { return clientBlobPrefix("canonical-review-index-v1"); }
 
 function normalize(value: string): string {
   return String(value || "").toUpperCase().replace(/\b(AKA|A\/K\/A)\b/g, " ").replace(/[^A-Z0-9]+/g, " ").replace(/\s+/g, " ").trim();
@@ -51,7 +52,7 @@ async function indexedReviewIds(identityKey: string): Promise<Set<string>> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) return ids;
   let cursor: string | undefined;
   do {
-    const result = await list({ prefix: `${INDEX_PREFIX}/${identityKey}/`, cursor, limit: 1000 });
+    const result = await list({ prefix: `${indexPrefix()}/${identityKey}/`, cursor, limit: 1000 });
     result.blobs.forEach((blob) => {
       const reviewId = (blob.pathname.split("/").pop() || "").replace(/\.json$/i, "");
       if (reviewId) ids.add(reviewId);
@@ -59,6 +60,12 @@ async function indexedReviewIds(identityKey: string): Promise<Set<string>> {
     cursor = result.hasMore ? result.cursor : undefined;
   } while (cursor);
   return ids;
+}
+
+function receiptStatus(review: TitleReviewResult): "Pass" | "Fail" | "Need Review" {
+  if (review.qc.qcStatus === "PASS") return "Pass";
+  if (review.qc.qcStatus === "FAIL") return "Fail";
+  return "Need Review";
 }
 
 export async function recordCanonicalReview(review: TitleReviewResult, telemetry: CanonicalReviewTelemetry): Promise<TitleReviewResult> {
@@ -79,7 +86,7 @@ export async function recordCanonicalReview(review: TitleReviewResult, telemetry
   const matterKey = identityKeys.find((key) => key.startsWith("parcel-")) || identityKeys.find((key) => key.startsWith("address-")) || identityKeys.find((key) => key.startsWith("order-")) || identityKeys[0] || opaqueKey("review", reviewId);
   const record = updated.record;
   const receipt = {
-    version: 2,
+    version: 3,
     engineVersion: updated.engineVersion,
     reviewId,
     matterKey,
@@ -96,7 +103,7 @@ export async function recordCanonicalReview(review: TitleReviewResult, telemetry
     county: record.county.value,
     searchType: record.orderType.value,
     searchEffectiveDate: record.effectiveDate.value,
-    status: updated.qc.qcStatus === "PASS" ? "Pass" : "Fail",
+    status: receiptStatus(updated),
     qcStatus: updated.qc.qcStatus,
     foreclosureReadiness: updated.qc.foreclosureReadiness,
     curativeIssueCount: updated.qc.curativeIssues.length,
@@ -114,12 +121,12 @@ export async function recordCanonicalReview(review: TitleReviewResult, telemetry
   };
 
   try {
-    await put(`${RECEIPT_PREFIX}/${reviewId}.json`, JSON.stringify(receipt), { access: "private", addRandomSuffix: false, contentType: "application/json" });
-    await Promise.all(identityKeys.map((identityKey) => put(`${INDEX_PREFIX}/${identityKey}/${reviewId}.json`, JSON.stringify({ reviewId, matterKey, packetHash: record.packetHash, clientScope: receipt.clientScope }), { access: "private", addRandomSuffix: false, contentType: "application/json" })));
+    await put(`${receiptPrefix()}/${reviewId}.json`, JSON.stringify(receipt), { access: "private", addRandomSuffix: false, contentType: "application/json" });
+    await Promise.all(identityKeys.map((identityKey) => put(`${indexPrefix()}/${identityKey}/${reviewId}.json`, JSON.stringify({ reviewId, matterKey, packetHash: record.packetHash, clientScope: receipt.clientScope }), { access: "private", addRandomSuffix: false, contentType: "application/json" })));
   } catch (error) {
     console.warn("CYBRID_TITLE_CANONICAL_RECEIPT_WRITE_FAILED", JSON.stringify({ reviewId, message: error instanceof Error ? error.message : "unknown" }));
   }
 
-  console.info("CYBRID_TITLE_CANONICAL_REVIEW_RECEIPT", JSON.stringify({ reviewId, matterKey, matterRevision, relatedPreviousReviews: previousIds.size, packetHash: record.packetHash, clientScope: receipt.clientScope, readiness: updated.qc.foreclosureReadiness }));
+  console.info("CYBRID_TITLE_CANONICAL_REVIEW_RECEIPT", JSON.stringify({ reviewId, matterKey, matterRevision, relatedPreviousReviews: previousIds.size, packetHash: record.packetHash, clientScope: receipt.clientScope, status: receipt.status, readiness: updated.qc.foreclosureReadiness }));
   return updated;
 }
