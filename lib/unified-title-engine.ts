@@ -1,3 +1,6 @@
+import { put } from "@vercel/blob";
+import { clientBlobPrefix } from "./client-instance";
+import { createHash } from "node:crypto";
 import { preparePdfPacket, type PacketExtractionLedger } from "./document-engine";
 import { preservePartialPacketEvidence } from "./partial-packet";
 import { recoverPreparedPacketRemotely } from "./remote-pdf-recovery";
@@ -72,6 +75,13 @@ function normalizeReportRunSheetBounds(record: CanonicalTitleRecord): void {
 }
 
 export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: string, options: UnifiedReviewOptions = {}): Promise<UnifiedReviewExecution> {
+  let sourceBlobPath: string | undefined;
+  if (process.env.VERA_COMPLIANCE_MODE === "1") {
+    if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error("EVIDENCE_PERSISTENCE_FAILED: client reviews require durable storage.");
+    const hash = createHash("sha256").update(Buffer.from(buffer)).digest("hex");
+    const source = await put(`${clientBlobPrefix("source-packets")}/${hash}.pdf`, Buffer.from(buffer), { access: "private", addRandomSuffix: true, contentType: "application/pdf" });
+    sourceBlobPath = source.pathname;
+  }
   let pipeline = createPipelineState();
   pipeline = advancePipeline(pipeline, "INGEST", `Accepted exact source packet ${sourceFile}`);
 
@@ -156,9 +166,10 @@ export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: str
 
   let dossierPersisted = false;
   try {
-    await saveReviewDossier({ review, evidenceLedger: extracted.ledger, pageLedger: prepared.ledger });
+    await saveReviewDossier({ review, evidenceLedger: extracted.ledger, pageLedger: prepared.ledger, sourceBlobPath });
     dossierPersisted = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
   } catch (error) {
+    if (process.env.VERA_COMPLIANCE_MODE === "1") throw new Error("EVIDENCE_PERSISTENCE_FAILED: review dossier could not be stored.");
     console.warn("CYBRID_TITLE_DOSSIER_WRITE_FAILED", JSON.stringify({
       reviewId: review.record.reviewId,
       message: error instanceof Error ? error.message : "unknown",

@@ -46,11 +46,10 @@ export function summarizeDocumentIntegrity(ledger: PacketExtractionLedger): Docu
 }
 
 function downgradeCheck(check: QcCheckResult, unresolved: Set<number>): QcCheckResult {
-  if (check.status === "FAIL" || check.status === "NOT_APPLICABLE") return check;
+  if (check.status === "CANNOT_CONFIRM") return check;
   const citedPages = pageSet(check.evidence.map((item) => item.page));
   const dependsOnUnreadable = [...citedPages].some((page) => unresolved.has(page));
-  const independentReadableEvidence = [...citedPages].some((page) => !unresolved.has(page));
-  if (!dependsOnUnreadable || independentReadableEvidence) return check;
+  if (!dependsOnUnreadable) return check;
   return {
     ...check,
     status: "CANNOT_CONFIRM",
@@ -81,9 +80,12 @@ export function applyDocumentIntegrityGuard(review: TitleReviewResult, ledger: P
     evidenceIds: [],
   };
 
-  const curativeIssues = review.qc.curativeIssues.some((issue) => issue.code === integrityIssue.code)
-    ? review.qc.curativeIssues
-    : [...review.qc.curativeIssues, integrityIssue];
+  const downgraded = new Map(checks.filter((check, i) => check.status !== review.qc.checks[i].status).map((check) => [check.id, check]));
+  const curativeIssues = review.qc.curativeIssues.filter((issue) => issue.code !== integrityIssue.code).map((issue) => {
+    const check = downgraded.get(issue.checkId);
+    return check ? { ...issue, severity: "REVIEW" as const, title: check.summary, recommendedAction: check.recommendedAction } : issue;
+  });
+  curativeIssues.push(integrityIssue);
 
   const existingReadableFail = checks.some((check) => check.status === "FAIL" && check.critical);
   return {

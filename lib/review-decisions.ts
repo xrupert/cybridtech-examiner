@@ -1,3 +1,4 @@
+import { clientBlobPrefix } from "./client-instance";
 import { get, put } from "@vercel/blob";
 import type { QcStatus } from "./title-domain";
 
@@ -21,10 +22,10 @@ export interface ReviewDecisionManifest {
   updatedAt: string;
 }
 
-const PREFIX = "cybrid-title/review-decisions-v1";
+
 
 function path(reviewId: string): string {
-  return `${PREFIX}/${encodeURIComponent(reviewId)}.json`;
+  return `${clientBlobPrefix("review-decisions-v1")}/${encodeURIComponent(reviewId)}.json`;
 }
 
 export async function loadReviewDecisions(reviewId: string): Promise<ReviewDecisionManifest> {
@@ -42,6 +43,8 @@ export async function loadReviewDecisions(reviewId: string): Promise<ReviewDecis
 
 export async function saveReviewDecision(input: Omit<ReviewDecisionRecord, "decidedAt">): Promise<ReviewDecisionManifest> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error("Persistent review decisions require the private Cybrid Title Blob store.");
+  if (!["CONFIRM", "CORRECT", "NEEDS_EVIDENCE"].includes(input.decision)) throw new Error("Invalid examiner decision.");
+  if (input.correctedStatus !== undefined && !["PASS", "FAIL", "CANNOT_CONFIRM", "NOT_APPLICABLE"].includes(input.correctedStatus)) throw new Error("Invalid corrected status.");
   if (!input.reviewId.trim() || !input.checkId.trim()) throw new Error("reviewId and checkId are required.");
   if (input.decision === "CORRECT" && !input.correctedStatus) throw new Error("A corrected status is required when correcting a finding.");
   if (!input.reason.trim()) throw new Error("A decision reason is required.");

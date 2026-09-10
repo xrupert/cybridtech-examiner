@@ -3,7 +3,7 @@ import { AUDIT_RULE_VERSION, SEARCH_TYPES } from "@/lib/audit-rules";
 import { reviewTitlePdfUnified, UNIFIED_TITLE_ENGINE_VERSION } from "@/lib/unified-title-engine";
 import { titleExtractionModel } from "@/lib/openai-title-extractor";
 import { accessProtectionConfigured, checkExaminerAccess, examinerAuthenticationMode } from "@/lib/examiner-auth";
-import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
+import { filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 import { assertClientScope, clientInstanceConfig, clientPublicDescriptor } from "@/lib/client-instance";
 
@@ -89,7 +89,6 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  let cleanupPathnames: string[] = [];
   try {
     applyOpenAIKeyAlias();
     if (!openAIConfigured()) return NextResponse.json({ code: "OPENAI_NOT_CONFIGURED", error: "OpenAI document extraction/checking is not configured.", retryable: true }, { status: 503 });
@@ -117,7 +116,6 @@ export async function POST(request: NextRequest) {
       const body = await request.json() as { blobPathnames?: string[]; state?: string; searchType?: string; clientName?: string };
       if (!body.blobPathnames?.length) return NextResponse.json({ code: "NO_FILE", error: "Provide one private title-report upload pathname." }, { status: 400 });
       if (body.blobPathnames.length !== 1) return NextResponse.json({ code: "TOO_MANY_FILES", error: "Each packet job accepts one title-report PDF. Batch QC creates one isolated job per packet." }, { status: 400 });
-      cleanupPathnames = body.blobPathnames;
       const files = await filesFromPrivateBlobs(body.blobPathnames);
       file = files[0];
       state = body.state || AUTO_DETECT_STATE;
@@ -143,14 +141,12 @@ export async function POST(request: NextRequest) {
       console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ engine: UNIFIED_TITLE_ENGINE_VERSION, code: providerFailure.code, message: message.slice(0, 600) }));
       return NextResponse.json(providerFailure, { status: providerFailure.status });
     }
-    const input = /^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):/.test(message);
+    const input = /^(INVALID_UPLOAD|CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):/.test(message);
     return NextResponse.json({
       code: input ? message.split(":", 1)[0] : "REVIEW_FAILED",
-      error: message.replace(/^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):\s*/, ""),
+      error: message.replace(/^(INVALID_UPLOAD|CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):\s*/, ""),
       retryable: !input,
       engine: UNIFIED_TITLE_ENGINE_VERSION,
     }, { status: input ? 400 : 500 });
-  } finally {
-    await deletePrivateBlobs(cleanupPathnames);
   }
 }

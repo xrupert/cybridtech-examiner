@@ -1,10 +1,11 @@
+import { clientBlobPrefix } from "./client-instance";
 import { createHash, randomUUID } from "node:crypto";
 import { list, put } from "@vercel/blob";
 import { AUDIT_RULE_VERSION } from "./audit-rules";
 import type { TitleReviewResult } from "./title-domain";
 
-const RECEIPT_PREFIX = "cybrid-title/review-receipts";
-const INDEX_PREFIX = "cybrid-title/canonical-review-index-v1";
+
+
 
 export interface CanonicalReviewTelemetry {
   pageCount: number;
@@ -51,7 +52,7 @@ async function indexedReviewIds(identityKey: string): Promise<Set<string>> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) return ids;
   let cursor: string | undefined;
   do {
-    const result = await list({ prefix: `${INDEX_PREFIX}/${identityKey}/`, cursor, limit: 1000 });
+    const result = await list({ prefix: `${clientBlobPrefix("canonical-review-index-v1")}/${identityKey}/`, cursor, limit: 1000 });
     result.blobs.forEach((blob) => {
       const reviewId = (blob.pathname.split("/").pop() || "").replace(/\.json$/i, "");
       if (reviewId) ids.add(reviewId);
@@ -96,7 +97,7 @@ export async function recordCanonicalReview(review: TitleReviewResult, telemetry
     county: record.county.value,
     searchType: record.orderType.value,
     searchEffectiveDate: record.effectiveDate.value,
-    status: updated.qc.qcStatus === "PASS" ? "Pass" : "Fail",
+    status: updated.qc.qcStatus === "PASS" ? "Pass" : updated.qc.qcStatus === "FAIL" ? "Fail" : "Needs review",
     qcStatus: updated.qc.qcStatus,
     foreclosureReadiness: updated.qc.foreclosureReadiness,
     curativeIssueCount: updated.qc.curativeIssues.length,
@@ -114,9 +115,10 @@ export async function recordCanonicalReview(review: TitleReviewResult, telemetry
   };
 
   try {
-    await put(`${RECEIPT_PREFIX}/${reviewId}.json`, JSON.stringify(receipt), { access: "private", addRandomSuffix: false, contentType: "application/json" });
-    await Promise.all(identityKeys.map((identityKey) => put(`${INDEX_PREFIX}/${identityKey}/${reviewId}.json`, JSON.stringify({ reviewId, matterKey, packetHash: record.packetHash, clientScope: receipt.clientScope }), { access: "private", addRandomSuffix: false, contentType: "application/json" })));
+    await put(`${clientBlobPrefix("review-receipts")}/${reviewId}.json`, JSON.stringify(receipt), { access: "private", addRandomSuffix: false, contentType: "application/json" });
+    await Promise.all(identityKeys.map((identityKey) => put(`${clientBlobPrefix("canonical-review-index-v1")}/${identityKey}/${reviewId}.json`, JSON.stringify({ reviewId, matterKey, packetHash: record.packetHash, clientScope: receipt.clientScope }), { access: "private", addRandomSuffix: false, contentType: "application/json" })));
   } catch (error) {
+    if (process.env.VERA_COMPLIANCE_MODE === "1") throw new Error("EVIDENCE_PERSISTENCE_FAILED: review receipt could not be stored.");
     console.warn("CYBRID_TITLE_CANONICAL_RECEIPT_WRITE_FAILED", JSON.stringify({ reviewId, message: error instanceof Error ? error.message : "unknown" }));
   }
 

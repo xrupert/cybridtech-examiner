@@ -1,3 +1,4 @@
+import { clientBlobPrefix } from "./client-instance";
 import { randomUUID } from "node:crypto";
 import { get, put } from "@vercel/blob";
 
@@ -23,10 +24,10 @@ export interface BatchManifest {
   items: BatchManifestItem[];
 }
 
-const PREFIX = "cybrid-title/batches-v1";
+
 
 function path(batchId: string): string {
-  return `${PREFIX}/${encodeURIComponent(batchId)}.json`;
+  return `${clientBlobPrefix("batches-v1")}/${encodeURIComponent(batchId)}.json`;
 }
 
 async function persist(manifest: BatchManifest): Promise<void> {

@@ -1,5 +1,7 @@
 "use client";
 
+import { ExaminerAccess } from "../components/ExaminerAccess";
+import { examinerFetch, examinerUploadPayload } from "@/lib/examiner-client";
 import { upload } from "@vercel/blob/client";
 import { useEffect, useMemo, useState } from "react";
 import { SEARCH_TYPES } from "@/lib/audit-rules";
@@ -22,7 +24,7 @@ import styles from "./demo.module.css";
 
 type ReviewSearchType = "Auto Detect" | (typeof SEARCH_TYPES)[number];
 type ItemStatus = "queued" | "processing" | "complete" | "error";
-type Readiness = { openAIConfigured: boolean; largeFileStorageConfigured: boolean; authenticationMode?: string; engine?: string; extractionModel?: string; checkModel?: string; pipeline?: string[]; };
+type Readiness = { client?: { clientName: string; complianceMode: boolean }; openAIConfigured: boolean; largeFileStorageConfigured: boolean; authenticationMode?: string; engine?: string; extractionModel?: string; checkModel?: string; pipeline?: string[]; };
 type BatchItem = { id: string; manifestItemId: string; fileName: string; status: ItemStatus; review?: TitleReviewResult; error?: string; };
 type BatchManifest = { batchId: string; items: Array<{ itemId: string; sourceFile: string }>; };
 type DecisionRecord = SavedDecision & { reviewId?: string; actor?: string; decidedAt?: string };
@@ -39,6 +41,10 @@ function supplementalChecks(review?: TitleReviewResult): QcCheckResult[] { retur
 function isForeclosureReview(review?: TitleReviewResult): boolean { return Boolean(review && review.record.orderType.state === "CONFIRMED" && /^foreclosure$/i.test(review.record.orderType.value)); }
 
 export default function DemoPage() {
+  return <ExaminerAccess><ExaminerWorkbench /></ExaminerAccess>;
+}
+
+function ExaminerWorkbench() {
   const [clientName, setClientName] = useState("McCalla");
   const [searchType, setSearchType] = useState<ReviewSearchType>("Auto Detect");
   const [readiness, setReadiness] = useState<Readiness | null>(null);
@@ -53,7 +59,7 @@ export default function DemoPage() {
   const [decisions, setDecisions] = useState<DecisionMap>({});
   const [selectedColumns, setSelectedColumns] = useState<string[]>(MCCALLA_EXPORT_PROFILE.columns.map((column) => column.key));
 
-  useEffect(() => { fetch("/api/examine").then((response) => response.json()).then(setReadiness).catch(() => setReadiness(null)); }, []);
+  useEffect(() => { examinerFetch("/api/examine").then((response) => response.json()).then((value: Readiness) => { setReadiness(value); if (value.client?.complianceMode) setClientName(value.client.clientName); }).catch(() => setReadiness(null)); }, []);
   const availableColumns = useMemo(() => { const byKey = new Map<string, ExportColumn>(); AVAILABLE_EXPORT_COLUMNS.forEach((column) => byKey.set(column.key, column)); return [...byKey.values()]; }, []);
   const completeItems = useMemo(() => items.filter((item) => item.review), [items]);
   const selected = useMemo(() => items.find((item) => item.id === selectedId) || completeItems[0], [items, selectedId, completeItems]);
@@ -68,18 +74,19 @@ export default function DemoPage() {
   }
 
   async function createBatch(): Promise<BatchManifest> {
-    const response = await fetch("/api/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientName, sourceFiles: files.map((file) => file.name), exportProfileId: "mccalla-v3" }) });
+    const response = await examinerFetch("/api/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientName, sourceFiles: files.map((file) => file.name), exportProfileId: "mccalla-v3" }) });
     return parseResponse(response) as Promise<BatchManifest>;
   }
 
   async function updateBatch(manifestBatchId: string, item: BatchItem, status: "PROCESSING" | "COMPLETE" | "ERROR", review?: TitleReviewResult, message?: string) {
     if (!manifestBatchId || !item.manifestItemId) return;
-    await fetch("/api/batches", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ batchId: manifestBatchId, itemId: item.manifestItemId, status, reviewId: review?.record.reviewId, packetHash: review?.record.packetHash, error: message }) }).then(parseResponse);
+    await examinerFetch("/api/batches", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ batchId: manifestBatchId, itemId: item.manifestItemId, status, reviewId: review?.record.reviewId, packetHash: review?.record.packetHash, error: message }) }).then(parseResponse);
   }
 
   async function uploadOne(file: File, index: number, total: number) {
-    const pathname = `cybrid-title/canonical/${Date.now()}-${index}-${safeName(file.name)}.pdf`;
-    const result = await upload(pathname, file, { access: "private", handleUploadUrl: "/api/uploads", clientPayload: JSON.stringify({ mode: "canonical-title-platform" }), contentType: "application/pdf", multipart: file.size > 4_000_000, onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)) });
+    const intent = await examinerFetch("/api/upload-intents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: file.name }) }).then(parseResponse);
+    const pathname = intent.pathname as string;
+    const result = await upload(pathname, file, { access: "private", handleUploadUrl: "/api/uploads", clientPayload: examinerUploadPayload(), contentType: "application/pdf", multipart: file.size > 4_000_000, onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)) });
     return result.pathname;
   }
 
@@ -87,11 +94,11 @@ export default function DemoPage() {
     let response: Response;
     if (readiness?.largeFileStorageConfigured) {
       const pathname = await uploadOne(file, index, total);
-      response = await fetch("/api/examine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType, clientName }) });
+      response = await examinerFetch("/api/examine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType, clientName }) });
     } else {
       if (file.size > 4_000_000) throw new Error("Private large-file storage is required for this packet.");
       const form = new FormData(); form.append("files", file); form.set("state", "AUTO"); form.set("searchType", searchType); form.set("clientName", clientName);
-      response = await fetch("/api/examine", { method: "POST", body: form });
+      response = await examinerFetch("/api/examine", { method: "POST", body: form });
     }
     const data = await parseResponse(response);
     if (!data?.review) throw new Error("Cybrid Title returned no canonical title review.");
@@ -100,7 +107,7 @@ export default function DemoPage() {
 
   async function loadSavedDecisions(reviewId: string) {
     try {
-      const response = await fetch(`/api/review-decisions?reviewId=${encodeURIComponent(reviewId)}`);
+      const response = await examinerFetch(`/api/review-decisions?reviewId=${encodeURIComponent(reviewId)}`);
       if (!response.ok) return;
       const manifest = await response.json() as { decisions?: DecisionRecord[] };
       const records = manifest.decisions || [];
@@ -160,7 +167,7 @@ export default function DemoPage() {
     const reason = `Examiner selected ${mortgage.instrumentNumber} as the foreclosure target after reviewing the competing security interests.`;
     try {
       setError("");
-      const response = await fetch("/api/review-decisions", {
+      const response = await examinerFetch("/api/review-decisions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: "TARGET_LIEN_FOUND", decision: "CORRECT", correctedStatus: "PASS", correctedValue: mortgage.instrumentNumber, reason }),
@@ -199,7 +206,7 @@ export default function DemoPage() {
     const clean = veraChecks(item.review).filter((check) => ["PASS", "NOT_APPLICABLE"].includes(check.status) && !decisionFor(item, check.id));
     for (const check of clean) {
       const reason = "Examiner confirmed this clean Vera finding against the displayed packet evidence.";
-      const response = await fetch("/api/review-decisions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: check.id, decision: "CONFIRM", reason }) });
+      const response = await examinerFetch("/api/review-decisions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: check.id, decision: "CONFIRM", reason }) });
       if (!response.ok) { setError((await response.json().catch(() => null))?.error || `Could not confirm Vera Question ${check.legacyQuestionNumber}.`); return; }
       applySavedDecision(item, { checkId: check.id, decision: "CONFIRM", reason });
     }

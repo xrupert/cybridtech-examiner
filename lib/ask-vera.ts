@@ -193,7 +193,7 @@ export async function askVera(reviewId: string, question: string): Promise<AskVe
   if (!cleanQuestion) throw new Error("QUESTION_REQUIRED: ask a specific question about the reviewed packet.");
 
   const retrieved = retrieve(cleanQuestion, dossier);
-  const unresolved = new Set(dossier.pageLedger.lowTextPages);
+  const unresolved = new Set([...dossier.pageLedger.lowTextPages, ...dossier.pageLedger.ocrSkippedPages]);
   const context = {
     reviewId,
     packetHash: dossier.packetHash,
@@ -220,6 +220,7 @@ export async function askVera(reviewId: string, question: string): Promise<AskVe
   if (!key) throw new Error("OPENAI_NOT_CONFIGURED: Ask Vera requires the configured review model.");
   const response = await fetch(`${OPENAI_API}/responses`, {
     method: "POST",
+    signal: AbortSignal.timeout(120_000),
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: model(),

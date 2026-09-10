@@ -1,3 +1,4 @@
+import hmac
 import io
 import os
 import re
@@ -35,8 +36,8 @@ TITLE_SIGNALS = re.compile(
 def _require_auth(authorization: Optional[str]) -> None:
     expected = os.getenv("VERA_OCR_API_KEY", "").strip()
     if not expected:
-        return
-    if authorization != f"Bearer {expected}":
+        raise HTTPException(status_code=503, detail="OCR authentication is not configured")
+    if not hmac.compare_digest(authorization or "", f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -113,6 +114,7 @@ def _tesseract_image(image: Image.Image) -> dict:
                 lang=language,
                 config=f"--oem 1 --psm {psm}",
                 output_type=pytesseract.Output.DICT,
+                timeout=30,
             )
             lines = []
             current_key = None
@@ -221,7 +223,10 @@ async def _upstream_turbo_pdf(pdf_bytes: bytes, requested: list[int], dpi: int) 
 
 
 async def _ocr_bytes(image_bytes: bytes) -> dict:
-    upstream = await _upstream_turbo(image_bytes)
+    try:
+        upstream = await _upstream_turbo(image_bytes)
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        upstream = None
     if upstream:
         return {"provider": "turboocr", "text": upstream["text"], "confidence": upstream["confidence"], "attempts": [{"engine": "turboocr", "status": "accepted"}]}
 
@@ -334,19 +339,22 @@ async def ocr_pdf(
                 })
                 continue
             tesseract_budget -= 1
-            page = document.load_page(page_number - 1)
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
-            image_bytes = pix.tobytes("png")
-            result = await _ocr_bytes(image_bytes)
-            output.append({
-                "page": page_number,
-                "processed": True,
-                "blank": bool(result.get("blank", False)),
-                "text": result.get("text", ""),
-                "confidence": result.get("confidence", 0.0),
-                "provider": result.get("provider", "tesseract"),
-                "attempts": result.get("attempts", []),
-            })
+            try:
+                page = document.load_page(page_number - 1)
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                image_bytes = pix.tobytes("png")
+                result = await _ocr_bytes(image_bytes)
+                output.append({
+                    "page": page_number,
+                    "processed": True,
+                    "blank": bool(result.get("blank", False)),
+                    "text": result.get("text", ""),
+                    "confidence": result.get("confidence", 0.0),
+                    "provider": result.get("provider", "tesseract"),
+                    "attempts": result.get("attempts", []),
+                })
+            except Exception:
+                output.append({"page": page_number, "processed": False, "blank": False, "text": "", "confidence": 0.0, "provider": "tesseract", "attempts": [{"engine": "page-ocr", "status": "failed", "reason": "Page extraction failed; manual review required."}]})
     finally:
         document.close()
     return {"pageCount": len(requested), "pages": output, "turboPdfRecovered": len(turbo_pages)}

@@ -1,5 +1,6 @@
 "use client";
 
+import { examinerFetch } from "@/lib/examiner-client";
 import { useState } from "react";
 import type { QcCheckResult, QcStatus } from "@/lib/title-domain";
 import styles from "./demo.module.css";
@@ -46,7 +47,7 @@ export function ReviewDecisionControls({
       reason: resolvedReason,
     };
     try {
-      const response = await fetch("/api/review-decisions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = await examinerFetch("/api/review-decisions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(payload?.error || "Could not save examiner decision.");
       onSaved({ checkId: check.id, decision, correctedStatus: body.correctedStatus, correctedValue: body.correctedValue, reason: resolvedReason });

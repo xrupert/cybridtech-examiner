@@ -1,3 +1,4 @@
+import { assertClientScope } from "@/lib/client-instance";
 import { NextRequest, NextResponse } from "next/server";
 import { checkExaminerAccess } from "@/lib/examiner-auth";
 import { createBatchManifest, loadBatchManifest, updateBatchItem, type BatchItemStatus } from "@/lib/batch-manifest";
@@ -19,7 +20,7 @@ export async function POST(request: NextRequest) {
     if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
     const body = await request.json() as { clientName?: string; sourceFiles?: string[]; exportProfileId?: string };
     if (!Array.isArray(body.sourceFiles) || !body.sourceFiles.length) return NextResponse.json({ error: "sourceFiles are required." }, { status: 400 });
-    return NextResponse.json(await createBatchManifest(body.clientName || "Ncala", body.sourceFiles, body.exportProfileId || "ncala-demo-v1"));
+    return NextResponse.json(await createBatchManifest(assertClientScope(body.clientName).clientName, body.sourceFiles, body.exportProfileId || "ncala-demo-v1"));
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create batch." }, { status: 400 });
   }
@@ -31,6 +32,7 @@ export async function PATCH(request: NextRequest) {
     if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
     const body = await request.json() as { batchId?: string; itemId?: string; status?: BatchItemStatus; reviewId?: string; packetHash?: string; error?: string };
     if (!body.batchId || !body.itemId || !body.status) return NextResponse.json({ error: "batchId, itemId, and status are required." }, { status: 400 });
+    if (!["QUEUED", "PROCESSING", "COMPLETE", "ERROR"].includes(body.status)) return NextResponse.json({ error: "Invalid batch status." }, { status: 400 });
     return NextResponse.json(await updateBatchItem(body.batchId, body.itemId, {
       status: body.status,
       reviewId: body.reviewId,

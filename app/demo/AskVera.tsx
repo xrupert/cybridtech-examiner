@@ -1,5 +1,6 @@
 "use client";
 
+import { examinerFetch } from "@/lib/examiner-client";
 import { FormEvent, useState } from "react";
 import styles from "./AskVera.module.css";
 
@@ -33,7 +34,7 @@ export function AskVera({ reviewId, onOpenSource }: { reviewId: string; onOpenSo
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/ask-vera", {
+      const response = await examinerFetch("/api/ask-vera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reviewId, question: clean }),
