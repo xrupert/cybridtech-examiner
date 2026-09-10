@@ -1,3 +1,4 @@
+import { clientBlobPrefix } from "./client-instance";
 import { createHash } from "node:crypto";
 import { get, put } from "@vercel/blob";
 import { ocrPageImage, type PageOcrAttempt, type PageOcrProvider } from "./page-ocr";
@@ -58,7 +59,7 @@ export interface PreparedPacket {
   extractionMs: number;
 }
 
-const CACHE_PREFIX = "cybrid-title/extraction-ledgers-v4";
+
 const MIN_PAGE_CHARS = 80;
 const MIN_PACKET_CHARS = 2000;
 const MIN_NATIVE_COVERAGE = 0.90;
@@ -73,7 +74,7 @@ export function hashPacket(buffer: ArrayBuffer): string {
 }
 
 function cachePath(packetHash: string): string {
-  return `${CACHE_PREFIX}/${packetHash}.json`;
+  return `${clientBlobPrefix("extraction-ledgers-v4")}/${packetHash}.json`;
 }
 
 function compactWhitespace(value: string): string {
@@ -206,6 +207,8 @@ async function loadCachedLedger(packetHash: string): Promise<PacketExtractionLed
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     const payload = await new Response(result.stream).json() as PacketExtractionLedger;
     if (payload?.version !== 4 || payload.packetHash !== packetHash || !Array.isArray(payload.pages)) return null;
+    // Do not cache unresolved outcomes indefinitely after OCR configuration changes.
+    if (payload.lowTextPages.length || payload.ocrSkippedPages.length) return null;
     return payload;
   } catch {
     return null;
@@ -256,6 +259,7 @@ async function renderPageForOcr(page: any): Promise<{ image: Buffer; inkRatio: n
   const viewport = page.getViewport({ scale: ocrRenderScale() });
   const width = Math.max(1, Math.ceil(viewport.width));
   const height = Math.max(1, Math.ceil(viewport.height));
+  if (width * height > 25_000_000) throw new Error("Rendered page exceeds the 25 megapixel budget; manual review required.");
   const canvas = canvasModule.createCanvas(width, height);
   const context = canvas.getContext("2d");
   context.fillStyle = "white";
@@ -276,8 +280,9 @@ async function recoverLowTextPages(pdf: any, pages: ExtractedPage[]): Promise<{ 
       const index = cursor;
       cursor += 1;
       const target = allowed[index];
-      const page = await pdf.getPage(target.page);
+      let page: any;
       try {
+        page = await pdf.getPage(target.page);
         const rendered = await renderPageForOcr(page);
         target.inkRatio = rendered.inkRatio;
         if (rendered.inkRatio <= blankInkRatio()) {
@@ -317,7 +322,7 @@ async function recoverLowTextPages(pdf: any, pages: ExtractedPage[]): Promise<{ 
           reason: `Page rendering/recovery failed: ${error instanceof Error ? error.message.slice(0, 500) : "unknown"}`,
         });
       } finally {
-        page.cleanup();
+        page?.cleanup();
       }
     }
   };

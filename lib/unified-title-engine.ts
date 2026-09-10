@@ -1,3 +1,4 @@
+import { checkpoint } from "./durable-jobs";
 import { put } from "@vercel/blob";
 import { clientBlobPrefix } from "./client-instance";
 import { createHash } from "node:crypto";
@@ -79,8 +80,10 @@ export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: str
   if (process.env.VERA_COMPLIANCE_MODE === "1") {
     if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error("EVIDENCE_PERSISTENCE_FAILED: client reviews require durable storage.");
     const hash = createHash("sha256").update(Buffer.from(buffer)).digest("hex");
-    const source = await put(`${clientBlobPrefix("source-packets")}/${hash}.pdf`, Buffer.from(buffer), { access: "private", addRandomSuffix: true, contentType: "application/pdf" });
-    sourceBlobPath = source.pathname;
+    sourceBlobPath = await checkpoint("source-copy-v1", async () => {
+      const source = await put(`${clientBlobPrefix("source-packets")}/${hash}.pdf`, Buffer.from(buffer), { access: "private", addRandomSuffix: true, contentType: "application/pdf" });
+      return source.pathname;
+    });
   }
   let pipeline = createPipelineState();
   pipeline = advancePipeline(pipeline, "INGEST", `Accepted exact source packet ${sourceFile}`);
@@ -88,9 +91,11 @@ export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: str
   // Native/page-local extraction runs first. If pages remain unresolved and a
   // dedicated OCR worker is configured, only those pages are escalated outside
   // Vercel. The resulting packet still preserves every original physical page.
-  const localPrepared = await preparePdfPacket(buffer.slice(0), sourceFile);
-  const recoveredPrepared = await recoverPreparedPacketRemotely(buffer.slice(0), localPrepared);
-  const prepared = preservePartialPacketEvidence(recoveredPrepared);
+  const prepared = await checkpoint("prepared-packet-v1", async () => {
+    const localPrepared = await preparePdfPacket(buffer.slice(0), sourceFile);
+    const recoveredPrepared = await recoverPreparedPacketRemotely(buffer, localPrepared);
+    return preservePartialPacketEvidence(recoveredPrepared);
+  });
   const documentIntegrity = summarizeDocumentIntegrity(prepared.ledger);
 
   // Large packets are partitioned into bounded, slightly-overlapping physical
@@ -119,7 +124,7 @@ export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: str
   pipeline = advancePipeline(pipeline, "NORMALIZE", `${record.instruments.length} instruments normalized; ${record.titleSummary.entries.length} report-run-sheet entries; ${record.runSheet.entries.length} distinct Abstractor/Run Sheet entries`);
 
   const initialQc = initialCanonicalQc(record, titleSummaryReconciliation, runSheetReconciliation);
-  const checker = await resolveSemanticChecks(record, initialQc, extracted.ledger);
+  const checker = await checkpoint("semantic-checks-v1", () => resolveSemanticChecks(record, initialQc, extracted.ledger));
   const qc = applyCheckerResolutions(initialQc, checker.resolutions, (ids) => ledgerEvidenceByIds(extracted.ledger, ids));
   pipeline = advancePipeline(pipeline, "CHECK", `${qc.checks.length} profile checks; ${checker.resolutions.length} semantic resolutions`);
 

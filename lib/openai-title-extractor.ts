@@ -56,15 +56,15 @@ function apiKey(): string {
 export function titleExtractionModel(): string { return process.env.OPENAI_EXTRACTION_MODEL || process.env.OPENAI_REVIEW_MODEL || process.env.OPENAI_DOCUMENT_MODEL || DEFAULT_MODEL; }
 function retryDelayMs(response: Response): number { const retryAfter = response.headers.get("retry-after"); const seconds = retryAfter ? Number(retryAfter) : NaN; return Number.isFinite(seconds) ? Math.min(15000, Math.max(1000, seconds * 1000)) : 2500; }
 async function openAIFetch(url: string, init: RequestInit): Promise<Response> {
-  let response = await fetch(url, init); if (response.ok) return response;
-  if (response.status === 429 || response.status >= 500) { await new Promise((resolve) => setTimeout(resolve, retryDelayMs(response))); response = await fetch(url, init); if (response.ok) return response; }
+  let response = await fetch(url, { ...init, signal: AbortSignal.timeout(240_000) }); if (response.ok) return response;
+  if (response.status === 429 || response.status >= 500) { await new Promise((resolve) => setTimeout(resolve, retryDelayMs(response))); response = await fetch(url, { ...init, signal: AbortSignal.timeout(240_000) }); if (response.ok) return response; }
   const body = await response.text().catch(() => ""); throw new Error(`OpenAI title extraction failed (${response.status})${body ? `: ${body.slice(0, 1200)}` : ""}`);
 }
 async function uploadPdf(buffer: ArrayBuffer, filename: string): Promise<string> {
   const form = new FormData(); form.append("purpose", "user_data"); form.append("expires_after[anchor]", "created_at"); form.append("expires_after[seconds]", "3600"); form.append("file", new Blob([buffer], { type: "application/pdf" }), filename);
   const response = await openAIFetch(`${OPENAI_API}/files`, { method: "POST", headers: { Authorization: `Bearer ${apiKey()}` }, body: form }); const data = await response.json() as { id?: string }; if (!data.id) throw new Error("OpenAI accepted the title PDF but returned no file id."); return data.id;
 }
-async function deleteFile(fileId: string): Promise<void> { try { await fetch(`${OPENAI_API}/files/${fileId}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey()}` } }); } catch { /* best-effort cleanup */ } }
+async function deleteFile(fileId: string): Promise<void> { try { await fetch(`${OPENAI_API}/files/${fileId}`, { method: "DELETE", signal: AbortSignal.timeout(10_000), headers: { Authorization: `Bearer ${apiKey()}` } }); } catch { /* best-effort cleanup */ } }
 function extractOutputText(data: unknown): string {
   const payload = data as { output_text?: string; output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }> };
   if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;

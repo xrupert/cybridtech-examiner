@@ -90,6 +90,32 @@ function ExaminerWorkbench() {
     return result.pathname;
   }
 
+  async function waitForJob(jobId: string, signal?: AbortSignal) {
+    for (;;) {
+      if (signal?.aborted) throw new Error("Monitoring stopped.");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const response = await examinerFetch(`/api/jobs?id=${encodeURIComponent(jobId)}`, { signal });
+      if (response.status === 503) continue;
+      const job = await parseResponse(response);
+      if (job.status === "COMPLETE") return job.result;
+      if (job.status === "ERROR") { sessionStorage.removeItem("vera-pending-job"); throw new Error(job.error || "Job failed."); }
+    }
+  }
+
+  useEffect(() => {
+    const jobId = sessionStorage.getItem("vera-pending-job");
+    if (!jobId) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setNotice(`Resuming job ${jobId}.`);
+    waitForJob(jobId, controller.signal).then((data) => {
+      if (cancelled) return;
+      sessionStorage.removeItem("vera-pending-job");
+      if (data?.review) setItems([{ id: jobId, manifestItemId: "", fileName: data.review.record.sourceFile, status: "complete", review: data.review }]);
+    }).catch((error) => { if (!cancelled) setError(error instanceof Error ? error.message : "Could not resume job."); });
+    return () => { cancelled = true; controller.abort(); };
+  }, []);
+
   async function reviewOne(file: File, index: number, total: number): Promise<TitleReviewResult> {
     let response: Response;
     if (readiness?.largeFileStorageConfigured) {
@@ -100,7 +126,15 @@ function ExaminerWorkbench() {
       const form = new FormData(); form.append("files", file); form.set("state", "AUTO"); form.set("searchType", searchType); form.set("clientName", clientName);
       response = await examinerFetch("/api/examine", { method: "POST", body: form });
     }
-    const data = await parseResponse(response);
+    let data = await parseResponse(response);
+    if (data?.jobId) {
+      const jobId = data.jobId as string;
+      setNotice(`Processing job ${jobId}. Processing continues on the worker if this tab closes.`);
+      // Store only the opaque job ID so a refresh can resume monitoring.
+      sessionStorage.setItem("vera-pending-job", jobId);
+      data = await waitForJob(jobId);
+      sessionStorage.removeItem("vera-pending-job");
+    }
     if (!data?.review) throw new Error("Cybrid Title returned no canonical title review.");
     return data.review as TitleReviewResult;
   }
