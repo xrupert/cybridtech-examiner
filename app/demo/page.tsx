@@ -1,7 +1,6 @@
 "use client";
 
-import { ExaminerAccess } from "../components/ExaminerAccess";
-import { examinerFetch, examinerUploadPayload } from "@/lib/examiner-client";
+import { examinerFetch } from "@/lib/examiner-client";
 import { upload } from "@vercel/blob/client";
 import { useEffect, useMemo, useState } from "react";
 import { SEARCH_TYPES } from "@/lib/audit-rules";
@@ -39,7 +38,7 @@ function supplementalChecks(review?: TitleReviewResult): QcCheckResult[] { retur
 function isForeclosureReview(review?: TitleReviewResult): boolean { return Boolean(review && review.record.orderType.state === "CONFIRMED" && /^foreclosure$/i.test(review.record.orderType.value)); }
 
 export default function DemoPage() {
-  return <ExaminerAccess><ExaminerWorkbench /></ExaminerAccess>;
+  return <ExaminerWorkbench />;
 }
 
 function ExaminerWorkbench() {
@@ -84,7 +83,7 @@ function ExaminerWorkbench() {
   async function uploadOne(file: File, index: number, total: number) {
     const intent = await examinerFetch("/api/upload-intents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: file.name }) }).then(parseResponse);
     const pathname = intent.pathname as string;
-    const result = await upload(pathname, file, { access: "private", handleUploadUrl: "/api/uploads", clientPayload: examinerUploadPayload(), contentType: "application/pdf", multipart: file.size > 4_000_000, onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)) });
+    const result = await upload(pathname, file, { access: "private", handleUploadUrl: "/api/uploads", contentType: "application/pdf", multipart: file.size > 4_000_000, onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)) });
     return result.pathname;
   }
 

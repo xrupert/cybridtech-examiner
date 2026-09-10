@@ -5,7 +5,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { AUDIT_RULE_VERSION, SEARCH_TYPES } from "@/lib/audit-rules";
 import { reviewTitlePdfUnified, UNIFIED_TITLE_ENGINE_VERSION } from "@/lib/unified-title-engine";
 import { titleExtractionModel } from "@/lib/openai-title-extractor";
-import { accessProtectionConfigured, checkExaminerAccess, examinerAuthenticationMode } from "@/lib/examiner-auth";
 import { filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 import { assertClientScope, clientInstanceConfig, clientPublicDescriptor } from "@/lib/client-instance";
@@ -50,8 +49,6 @@ export async function GET() {
     client,
     openAIConfigured: openAIConfigured(),
     openAIKeyAliasAccepted: Boolean(process.env.OPEN_AI_KEY),
-    authenticationMode: examinerAuthenticationMode(),
-    accessProtectionConfigured: accessProtectionConfigured(),
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     extractionModel: titleExtractionModel(),
     checkModel: process.env.OPENAI_CHECK_MODEL || process.env.OPENAI_REVIEW_MODEL || "gpt-5.6-sol",
@@ -96,9 +93,6 @@ export async function POST(request: NextRequest) {
   try {
     applyOpenAIKeyAlias();
     if (!openAIConfigured()) return NextResponse.json({ code: "OPENAI_NOT_CONFIGURED", error: "OpenAI document extraction/checking is not configured.", retryable: true }, { status: 503 });
-
-    const access = checkExaminerAccess(request);
-    if (!access.ok) return NextResponse.json({ code: "AUTH_REQUIRED", error: access.error, retryable: false }, { status: access.status });
 
     if (process.env.VERA_COMPLIANCE_MODE === "1" && !databaseConfigured()) return NextResponse.json({ error: "Durable job storage is required for client processing." }, { status: 503 });
     const instance = clientInstanceConfig();

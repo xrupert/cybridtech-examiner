@@ -1,8 +1,5 @@
-import { checkExaminerAccess } from "@/lib/examiner-auth";
 import { readJob } from "@/lib/durable-jobs";
 export async function GET(request: Request) {
-  const access = checkExaminerAccess(request);
-  if (!access.ok) return Response.json({ error: access.error }, { status: access.status });
   const id = new URL(request.url).searchParams.get("id") || "";
   if (!/^[0-9a-f-]{36}$/i.test(id)) return Response.json({ error: "Invalid job id." }, { status: 400 });
   try {

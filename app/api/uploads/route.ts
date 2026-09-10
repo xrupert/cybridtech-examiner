@@ -1,5 +1,4 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
-import { checkExaminerAccessCode } from "@/lib/examiner-auth";
 import { assertUploadPaths, MAX_UPLOAD_BYTES } from "@/lib/upload-paths";
 
 const ALLOWED_EXTENSIONS = /\.pdf$/i;
@@ -16,13 +15,6 @@ export async function POST(request: Request): Promise<Response> {
       onBeforeGenerateToken: async (pathname, clientPayload) => {
         if (!ALLOWED_EXTENSIONS.test(pathname)) throw new Error("Cybrid Title accepts PDF title files only.");
 
-        let accessCode = "";
-        try {
-          accessCode = String((JSON.parse(clientPayload || "{}") as { accessCode?: string }).accessCode || "");
-        } catch {
-          accessCode = "";
-        }
-        if (!checkExaminerAccessCode(accessCode)) throw new Error("Unauthorized Cybrid Title upload.");
         assertUploadPaths([pathname]);
 
         return {
