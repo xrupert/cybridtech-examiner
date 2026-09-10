@@ -1,4 +1,3 @@
-import { checkExaminerAccess } from "@/lib/examiner-auth";
 import { loadReviewDossier } from "@/lib/review-dossier";
 import { loadReviewDecisions } from "@/lib/review-decisions";
 import { projectReviewedResult, releaseWarnings } from "@/lib/review-release";
@@ -6,8 +5,6 @@ import { AVAILABLE_EXPORT_COLUMNS, createExportProfile, renderCsv, renderJson, v
 import { assertClientScope } from "@/lib/client-instance";
 
 export async function POST(request: Request) {
-  const access = checkExaminerAccess(request);
-  if (!access.ok) return Response.json({ error: access.error }, { status: access.status });
   try {
     const body = await request.json();
     if (!body || !Array.isArray(body.reviewIds) || !body.reviewIds.length || body.reviewIds.length > 100 || body.reviewIds.some((id: unknown) => typeof id !== "string" || !/^[a-f0-9-]{36}$/i.test(id))) return Response.json({ error: "Provide 1–100 valid review IDs." }, { status: 400 });

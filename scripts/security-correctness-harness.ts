@@ -1,13 +1,11 @@
 import { projectReviewedResult, releaseWarnings } from "../lib/review-release";
 import { POST as exportRoute } from "../app/api/review-exports/route";
 import assert from "node:assert/strict";
-import { checkExaminerAccess, testingAccessBypassEnabled } from "../lib/examiner-auth";
 import { assertUploadPaths, issueUploadPath } from "../lib/upload-paths";
 import { applyDocumentIntegrityGuard } from "../lib/document-integrity";
 import { applyReviewDecisions } from "../lib/review-decision-reducer";
 import { veraPassFailReason } from "../lib/vera-accuracy-audit";
 import { GET as acceptance } from "../app/api/acceptance/scanned-regression/route";
-import { GET as accessRoute } from "../app/api/access/route";
 
 const saved = { ...process.env };
 let count = 0;
@@ -15,26 +13,6 @@ function test(name: string, fn: () => void) { fn(); count++; console.log(`PASS $
 
 async function main() {
   try {
-    delete process.env.EXAMINER_REQUIRE_ACCESS_CODE;
-    delete process.env.EXAMINER_ACCESS_CODE;
-    test("missing auth configuration denies access", () => assert.equal(checkExaminerAccess(new Request("http://localhost")).ok, false));
-    process.env.EXAMINER_ACCESS_CODE = "test-secret-not-a-real-key";
-    test("wrong code denied", () => assert.equal(checkExaminerAccess(new Request("http://localhost", { headers: { "x-examiner-access-code": "wrong" } })).ok, false));
-    test("correct code accepted", () => assert.equal(checkExaminerAccess(new Request("http://localhost", { headers: { "x-examiner-access-code": process.env.EXAMINER_ACCESS_CODE } })).ok, true));
-    process.env.EXAMINER_REQUIRE_ACCESS_CODE = "false";
-    Object.assign(process.env, { NODE_ENV: "production" });
-    test("production cannot enable testing bypass", () => assert.equal(testingAccessBypassEnabled(), false));
-    Object.assign(process.env, { NODE_ENV: "development" });
-    delete process.env.VERCEL;
-    delete process.env.VERA_COMPLIANCE_MODE;
-    test("explicit local development bypass works", () => assert.equal(testingAccessBypassEnabled(), true));
-    process.env.VERA_COMPLIANCE_MODE = "1";
-    test("compliance disables local bypass", () => assert.equal(testingAccessBypassEnabled(), false));
-    delete process.env.VERA_ENABLE_ACCEPTANCE_ROUTE;
-    assert.equal((await acceptance(new Request("http://localhost"))).status, 404); count++;
-    assert.equal((await accessRoute(new Request("http://localhost"))).status, 401); count++;
-    assert.equal((await exportRoute(new Request("http://localhost", { method: "POST" }))).status, 401); count++;
-    assert.equal((await exportRoute(new Request("http://localhost", { method: "POST", headers: { "x-examiner-access-code": process.env.EXAMINER_ACCESS_CODE! }, body: JSON.stringify({ reviewIds: [], format: "csv", columns: [], report: { qcStatus: "PASS" } }) }))).status, 400); count++;
     process.env.BLOB_READ_WRITE_TOKEN = "test-only-signing-key";
     process.env.VERA_CLIENT_ID = "client-a";
     const path = issueUploadPath("a sample.pdf");

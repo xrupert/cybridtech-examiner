@@ -1,14 +1,11 @@
 import { loadReviewDossier } from "@/lib/review-dossier";
 import { NextRequest, NextResponse } from "next/server";
-import { checkExaminerAccess } from "@/lib/examiner-auth";
 import { loadReviewDecisions, saveReviewDecision, type ExaminerDecision } from "@/lib/review-decisions";
 import type { QcStatus } from "@/lib/title-domain";
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
-  const access = checkExaminerAccess(request);
-  if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
   const reviewId = request.nextUrl.searchParams.get("reviewId")?.trim() || "";
   if (!reviewId) return NextResponse.json({ error: "reviewId is required." }, { status: 400 });
   if (!await loadReviewDossier(reviewId)) return NextResponse.json({ error: "Review not found in this client instance." }, { status: 404 });
@@ -17,8 +14,6 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const access = checkExaminerAccess(request);
-    if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
     const body = await request.json() as {
       reviewId?: string;
       checkId?: string;
@@ -38,7 +33,7 @@ export async function POST(request: NextRequest) {
       correctedStatus: body.correctedStatus,
       correctedValue: body.correctedValue,
       reason: body.reason || "Examiner disposition",
-      actor: "shared-access-code (individual identity unverified)",
+      actor: "unattributed-preview-access",
     });
     return NextResponse.json(manifest);
   } catch (error) {

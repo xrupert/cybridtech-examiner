@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { askVera } from "@/lib/ask-vera";
-import { checkExaminerAccess } from "@/lib/examiner-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
   try {
-    const access = checkExaminerAccess(request);
-    if (!access.ok) return NextResponse.json({ code: "AUTH_REQUIRED", error: access.error }, { status: access.status });
     const body = await request.json().catch(() => null) as { reviewId?: string; question?: string } | null;
     const reviewId = String(body?.reviewId || "").trim();
     const question = String(body?.question || "").trim();
