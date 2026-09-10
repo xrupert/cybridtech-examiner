@@ -1,10 +1,11 @@
 import { preparePdfPacket, type PacketExtractionLedger } from "./document-engine";
 import { preservePartialPacketEvidence } from "./partial-packet";
+import { recoverPreparedPacketRemotely } from "./remote-pdf-recovery";
 import { buildCanonicalTitleRecordFromExtraction } from "./canonical-title-builder";
 import { initialCanonicalQc, applyCheckerResolutions } from "./canonical-qc-engine";
 import { jurisdictionAnalysisForRecord, mergeJurisdictionRequirements } from "./jurisdiction-rules";
 import { ledgerEvidenceByIds } from "./title-evidence-ledger";
-import { extractPdfTitlePacket } from "./openai-title-extractor";
+import { extractPdfTitlePacketScalable } from "./sharded-title-extractor";
 import { resolveSemanticChecks } from "./openai-title-checker";
 import { reconcileRunSheet, reconcileTitleSummary, type RunSheetReconciliation } from "./run-sheet-reconciler";
 import { createPipelineState, advancePipeline, assertCanonicalPipeline, type PipelineState } from "./pipeline";
@@ -74,12 +75,18 @@ export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: str
   let pipeline = createPipelineState();
   pipeline = advancePipeline(pipeline, "INGEST", `Accepted exact source packet ${sourceFile}`);
 
-  // Critical reliability rule: if the PDF opens, keep every physical page represented.
-  // A single unresolved scan never forces otherwise-readable pages into an all-or-nothing path.
-  const prepared = preservePartialPacketEvidence(await preparePdfPacket(buffer.slice(0), sourceFile));
+  // Native/page-local extraction runs first. If pages remain unresolved and a
+  // dedicated OCR worker is configured, only those pages are escalated outside
+  // Vercel. The resulting packet still preserves every original physical page.
+  const localPrepared = await preparePdfPacket(buffer.slice(0), sourceFile);
+  const recoveredPrepared = await recoverPreparedPacketRemotely(buffer.slice(0), localPrepared);
+  const prepared = preservePartialPacketEvidence(recoveredPrepared);
   const documentIntegrity = summarizeDocumentIntegrity(prepared.ledger);
 
-  const extracted = await extractPdfTitlePacket(buffer, sourceFile, prepared, {
+  // Large packets are partitioned into bounded, slightly-overlapping physical
+  // page shards. Each shard produces the same strict title JSON schema and the
+  // merge is deterministic before QC. Small packets keep the original path.
+  const extracted = await extractPdfTitlePacketScalable(buffer, sourceFile, prepared, {
     requestedState: options.requestedState,
     requestedSearchType: options.requestedSearchType,
   });
@@ -129,8 +136,9 @@ export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: str
     pipeline: { stages: ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD"], completedThrough: "RECORD" },
   };
 
-  // Unreadability is a document-integrity problem, not a title defect.  Keep any
-  // independently proven FAIL, but otherwise route the packet to examiner review.
+  // Unreadability is a document-integrity problem, not a title defect. Keep an
+  // independently grounded critical FAIL, but otherwise route uncertainty to
+  // CANNOT_CONFIRM / examiner review instead of killing the packet.
   review = applyDocumentIntegrityGuard(review, prepared.ledger);
   pipeline = advancePipeline(pipeline, "RENDER", "Canonical Vera-20 review, document-integrity guard, lien analysis, jurisdiction actions, and export result prepared");
 
