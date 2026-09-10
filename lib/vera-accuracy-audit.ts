@@ -1,4 +1,4 @@
-import type { CanonicalTitleRecord, QcCheckResult, QcProfileResult, QcStatus } from "./title-domain";
+import type { CanonicalTitleRecord, QcCheckResult, QcProfileResult } from "./title-domain";
 
 export type VeraAuditStatus = "ACCURATE" | "COMPLETE" | "PARTIAL" | "INCOMPLETE" | "DISCREPANCIES" | "PRESENT" | "NONE";
 export interface VeraAuditArea {
@@ -74,10 +74,10 @@ export function buildVeraAccuracyAudit(record: CanonicalTitleRecord, qc: QcProfi
   ];
 }
 
-export function veraPassFailReason(qc: QcProfileResult): { status: "Pass" | "Fail"; reason: string; confirmation: string } {
+export function veraPassFailReason(qc: QcProfileResult): { status: "Pass" | "Fail" | "Need Review"; reason: string; confirmation: string } {
   const failed = qc.checks.filter((check) => check.status === "FAIL");
   const unresolved = qc.checks.filter((check) => check.status === "CANNOT_CONFIRM");
-  if (failed.length) return { status: "Fail", reason: `${failed.length} confirmed QC failure${failed.length === 1 ? "" : "s"}: ${failed.slice(0, 3).map((check) => check.label).join("; ")}.`, confirmation: "The document contains the issues identified above and does not meet quality standards." };
-  if (unresolved.length) return { status: "Fail", reason: `${unresolved.length} review item${unresolved.length === 1 ? " remains" : "s remain"} unconfirmed; quality standards cannot be certified until resolved.`, confirmation: "The document contains unresolved review items and cannot yet be certified as meeting quality standards." };
+  if (failed.length) return { status: "Fail", reason: `${failed.length} confirmed QC failure${failed.length === 1 ? "" : "s"}: ${failed.slice(0, 3).map((check) => check.label).join("; ")}.`, confirmation: "Readable documentary evidence establishes the issue(s) identified above; the packet does not meet quality standards until cured." };
+  if (unresolved.length) return { status: "Need Review", reason: `${unresolved.length} review item${unresolved.length === 1 ? " remains" : "s remain"} unconfirmed. The available evidence does not support a substantive FAIL, but quality standards cannot be certified until the unresolved evidence is manually confirmed.`, confirmation: "The packet is not failed solely because evidence is unreadable or unavailable. It remains in manual review until the unresolved item(s) are established from reliable source evidence." };
   return { status: "Pass", reason: "All applicable Vera review checks are resolved without an identified QC failure.", confirmation: "The document meets all quality standards with no identified issues." };
 }
