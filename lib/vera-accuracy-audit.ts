@@ -47,9 +47,9 @@ export function buildVeraAccuracyAudit(record: CanonicalTitleRecord, qc: QcProfi
 
   const openLiens = record.foreclosureAnalysis.lienStack.filter((entry) => entry.status === "OPEN");
   const unknownLiens = record.foreclosureAnalysis.lienStack.filter((entry) => entry.status === "UNKNOWN");
-  const lienStatus: VeraAuditStatus = lienChecks.some((check) => check.status === "FAIL") || unknownLiens.length
+  const lienStatus: VeraAuditStatus = lienChecks.some((check) => check.status === "FAIL")
     ? "DISCREPANCIES"
-    : openLiens.length ? "PRESENT" : "NONE";
+    : unknownLiens.length ? "INCOMPLETE" : openLiens.length ? "PRESENT" : "NONE";
   const lienSummary = unknownLiens.length
     ? `${openLiens.length} supported open lien(s); ${unknownLiens.length} lien identity/identities have unresolved open/released status.`
     : openLiens.length

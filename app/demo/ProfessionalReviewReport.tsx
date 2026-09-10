@@ -75,7 +75,7 @@ function questionResponse(review: TitleReviewResult, check: QcCheckResult): { le
       return { text: check.summary };
     case 4: {
       const deedDetails = record.deeds.map((deed) => `Deed: ${party(deed, /grantor|seller/i)} → ${party(deed, /grantee|buyer|owner/i)}; dated ${clean(deed.documentDate)}; recorded ${clean(deed.recordingDate)}; Instrument #${clean(deed.instrumentNumber)}${deed.amount && deed.amount !== "Needs review" ? `; amount/consideration ${deed.amount}` : ""}.`);
-      const mortgageDetails = record.mortgages.map((item, index) => `Mortgage ${index + 1} / ${clean(item.type)}: ${clean(item.amount)}; Borrower(s) ${party(item, /borrower|mortgagor|grantor/i)}; Beneficiary/Lender ${party(item, /beneficiary|lender|mortgagee/i)}; dated ${clean(item.documentDate)}; recorded ${clean(item.recordingDate)}; Instrument #${clean(item.instrumentNumber)}${record.flags.min.state === "CONFIRMED" ? `; MIN ${record.flags.min.value}` : ""}.`);
+      const mortgageDetails = record.mortgages.map((item, index) => `Mortgage ${index + 1} / ${clean(item.type)}: ${clean(item.amount)}; Borrower(s) ${party(item, /borrower|mortgagor|grantor/i)}; Beneficiary/Lender ${party(item, /beneficiary|lender|mortgagee/i)}; dated ${clean(item.documentDate)}; recorded ${clean(item.recordingDate)}; Instrument #${clean(item.instrumentNumber)}.`);
       return { lead: responseLead(check), text: check.summary, details: [...deedDetails, ...mortgageDetails] };
     }
     case 5:
@@ -99,14 +99,8 @@ function questionResponse(review: TitleReviewResult, check: QcCheckResult): { le
       return { text: mortgage ? `${clean(mortgage.status)}. ${check.summary}` : check.summary };
     case 16:
       return { text: check.summary };
-    case 17: {
-      const related = review.qc.checks.filter((item) => item.status === "FAIL" || item.status === "CANNOT_CONFIRM");
-      const issues = unique([
-        ...record.dataQualityWarnings,
-        ...related.map((item) => item.summary),
-      ]);
-      return { lead: issues.length ? "Yes. Major issues identified:" : responseLead(check), text: issues.length ? "" : check.summary, details: issues };
-    }
+    case 17:
+      return { lead: responseLead(check), text: check.summary };
     case 18:
       return { lead: responseLead(check), text: record.flags.plat.state === "CONFIRMED" ? clean(record.flags.plat.value) : check.summary };
     case 19:
