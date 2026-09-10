@@ -1,5 +1,6 @@
 import { get, put } from "@vercel/blob";
 import type { QcStatus } from "./title-domain";
+import { clientBlobPrefix } from "./client-instance";
 
 export type ExaminerDecision = "CONFIRM" | "CORRECT" | "NEEDS_EVIDENCE";
 
@@ -21,10 +22,8 @@ export interface ReviewDecisionManifest {
   updatedAt: string;
 }
 
-const PREFIX = "cybrid-title/review-decisions-v1";
-
 function path(reviewId: string): string {
-  return `${PREFIX}/${encodeURIComponent(reviewId)}.json`;
+  return `${clientBlobPrefix("review-decisions-v1")}/${encodeURIComponent(reviewId)}.json`;
 }
 
 export async function loadReviewDecisions(reviewId: string): Promise<ReviewDecisionManifest> {
