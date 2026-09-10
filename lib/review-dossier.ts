@@ -10,6 +10,7 @@ export interface ReviewDossier {
   reviewId: string;
   packetHash: string;
   sourceFile: string;
+  sourceBlobPath?: string;
   createdAt: string;
   review: TitleReviewResult;
   evidenceLedger: TitleEvidenceLedger;
@@ -25,6 +26,7 @@ export async function saveReviewDossier(args: {
   review: TitleReviewResult;
   evidenceLedger: TitleEvidenceLedger;
   pageLedger: PacketExtractionLedger;
+  sourceBlobPath?: string;
 }): Promise<void> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) return;
   const dossier: ReviewDossier = {
@@ -32,6 +34,7 @@ export async function saveReviewDossier(args: {
     reviewId: args.review.record.reviewId,
     packetHash: args.review.record.packetHash,
     sourceFile: args.review.record.sourceFile,
+    sourceBlobPath: args.sourceBlobPath,
     createdAt: new Date().toISOString(),
     review: args.review,
     evidenceLedger: args.evidenceLedger,

@@ -16,8 +16,8 @@ function apiKey(): string { const key = process.env.OPENAI_API_KEY || process.en
 function checkerModel(): string { return process.env.OPENAI_CHECK_MODEL || process.env.OPENAI_REVIEW_MODEL || DEFAULT_MODEL; }
 function retryDelayMs(response: Response): number { const retryAfter = response.headers.get("retry-after"); const seconds = retryAfter ? Number(retryAfter) : NaN; return Number.isFinite(seconds) ? Math.min(15000, Math.max(1000, seconds * 1000)) : 2500; }
 async function openAIFetch(url: string, init: RequestInit): Promise<Response> {
-  let response = await fetch(url, init); if (response.ok) return response;
-  if (response.status === 429 || response.status >= 500) { await new Promise((resolve) => setTimeout(resolve, retryDelayMs(response))); response = await fetch(url, init); if (response.ok) return response; }
+  let response = await fetch(url, { ...init, signal: AbortSignal.timeout(240_000) }); if (response.ok) return response;
+  if (response.status === 429 || response.status >= 500) { await new Promise((resolve) => setTimeout(resolve, retryDelayMs(response))); response = await fetch(url, { ...init, signal: AbortSignal.timeout(240_000) }); if (response.ok) return response; }
   const body = await response.text().catch(() => ""); throw new Error(`OpenAI title checker failed (${response.status})${body ? `: ${body.slice(0, 1200)}` : ""}`);
 }
 function extractOutputText(data: unknown): string {
@@ -99,6 +99,7 @@ export async function resolveSemanticChecks(record: CanonicalTitleRecord, initia
   const model = checkerModel(); const started = Date.now();
   const evidenceNodes = ledger.evidence.map((node) => ({ id: node.id, page: node.page, documentType: node.documentType, instrumentNumber: node.instrumentNumber || "", quote: node.quote, confidence: node.confidence, source: node.source, nativeVerified: node.nativeVerified }));
   const payload = { canonicalRecord: compactRecord(record), evidenceLedger: evidenceNodes, unresolvedChecks: unresolved.map((check) => ({ id: check.id, label: check.label, category: check.category })) };
+  if (JSON.stringify(payload).length > 400_000) return { resolutions: [], model: "manual-review:semantic-context-budget", modelMs: 0 };
   const response = await openAIFetch(`${OPENAI_API}/responses`, {
     method: "POST", headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model, store: false, max_output_tokens: MAX_OUTPUT_TOKENS, reasoning: { effort: "low" }, instructions: instructions(initial, unresolved), input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(payload) }] }], text: { verbosity: "low", format: { type: "json_schema", name: "cybrid_title_qc_resolutions", strict: true, schema: checkerSchema } } }),

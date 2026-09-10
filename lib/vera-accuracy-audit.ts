@@ -47,9 +47,9 @@ export function buildVeraAccuracyAudit(record: CanonicalTitleRecord, qc: QcProfi
 
   const openLiens = record.foreclosureAnalysis.lienStack.filter((entry) => entry.status === "OPEN");
   const unknownLiens = record.foreclosureAnalysis.lienStack.filter((entry) => entry.status === "UNKNOWN");
-  const lienStatus: VeraAuditStatus = lienChecks.some((check) => check.status === "FAIL") || unknownLiens.length
+  const lienStatus: VeraAuditStatus = lienChecks.some((check) => check.status === "FAIL")
     ? "DISCREPANCIES"
-    : openLiens.length ? "PRESENT" : "NONE";
+    : unknownLiens.length ? "INCOMPLETE" : openLiens.length ? "PRESENT" : "NONE";
   const lienSummary = unknownLiens.length
     ? `${openLiens.length} supported open lien(s); ${unknownLiens.length} lien identity/identities have unresolved open/released status.`
     : openLiens.length
@@ -74,10 +74,11 @@ export function buildVeraAccuracyAudit(record: CanonicalTitleRecord, qc: QcProfi
   ];
 }
 
-export function veraPassFailReason(qc: QcProfileResult): { status: "Pass" | "Fail"; reason: string; confirmation: string } {
+export function veraPassFailReason(qc: QcProfileResult): { status: "Pass" | "Fail" | "Needs review"; reason: string; confirmation: string } {
   const failed = qc.checks.filter((check) => check.status === "FAIL");
   const unresolved = qc.checks.filter((check) => check.status === "CANNOT_CONFIRM");
   if (failed.length) return { status: "Fail", reason: `${failed.length} confirmed QC failure${failed.length === 1 ? "" : "s"}: ${failed.slice(0, 3).map((check) => check.label).join("; ")}.`, confirmation: "The document contains the issues identified above and does not meet quality standards." };
-  if (unresolved.length) return { status: "Fail", reason: `${unresolved.length} review item${unresolved.length === 1 ? " remains" : "s remain"} unconfirmed; quality standards cannot be certified until resolved.`, confirmation: "The document contains unresolved review items and cannot yet be certified as meeting quality standards." };
+  if (qc.qcStatus === "REVIEW" || qc.curativeIssues?.some((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW")) return { status: "Needs review", reason: "The packet requires examiner review before quality can be certified.", confirmation: "Manual review is required; unreadability is not a confirmed title defect." };
+  if (unresolved.length) return { status: "Needs review", reason: `${unresolved.length} review item${unresolved.length === 1 ? " remains" : "s remain"} unconfirmed; quality standards cannot be certified until resolved.`, confirmation: "The document contains unresolved review items and cannot yet be certified as meeting quality standards." };
   return { status: "Pass", reason: "All applicable Vera review checks are resolved without an identified QC failure.", confirmation: "The document meets all quality standards with no identified issues." };
 }

@@ -126,12 +126,19 @@ export function applyReviewDecisions(review: TitleReviewResult, decisions: Revie
     record.foreclosureAnalysis.status = readinessFromRequirements(record.foreclosureAnalysis.requirements);
   }
 
+  const reduced = reduceQcChecks(
+    { profileId: review.qc.profileId, profileVersion: review.qc.profileVersion, profileName: review.qc.profileName }, checks,
+  );
+  const integrityHold = review.qc.curativeIssues?.find((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW");
+  if (integrityHold) {
+    reduced.curativeIssues.push(integrityHold);
+    reduced.qcStatus = checks.some((check) => check.status === "FAIL" && check.critical) ? "FAIL" : "REVIEW";
+    if (reduced.qcStatus !== "FAIL") reduced.foreclosureReadiness = "CANNOT_CONFIRM";
+    reduced.unresolvedCount = Math.max(reduced.unresolvedCount, review.qc.unresolvedCount);
+  }
   return {
     ...review,
     record,
-    qc: reduceQcChecks(
-      { profileId: review.qc.profileId, profileVersion: review.qc.profileVersion, profileName: review.qc.profileName },
-      checks,
-    ),
+    qc: reduced,
   };
 }

@@ -1,9 +1,12 @@
+import { databaseConfigured } from "@/lib/database";
+import { enqueueJob } from "@/lib/durable-jobs";
+import { assertUploadPaths } from "@/lib/upload-paths";
 import { NextRequest, NextResponse } from "next/server";
 import { AUDIT_RULE_VERSION, SEARCH_TYPES } from "@/lib/audit-rules";
 import { reviewTitlePdfUnified, UNIFIED_TITLE_ENGINE_VERSION } from "@/lib/unified-title-engine";
 import { titleExtractionModel } from "@/lib/openai-title-extractor";
 import { accessProtectionConfigured, checkExaminerAccess, examinerAuthenticationMode } from "@/lib/examiner-auth";
-import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
+import { filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
 import { assertClientScope, clientInstanceConfig, clientPublicDescriptor } from "@/lib/client-instance";
 
@@ -53,6 +56,7 @@ export async function GET() {
     extractionModel: titleExtractionModel(),
     checkModel: process.env.OPENAI_CHECK_MODEL || process.env.OPENAI_REVIEW_MODEL || "gpt-5.6-sol",
     askVeraConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN && openAIConfigured()),
+    processingMode: databaseConfigured() ? "durable-worker" : "synchronous-development",
     maxReviewDurationSeconds: maxDuration,
     ruleVersion: AUDIT_RULE_VERSION,
     pipeline: ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD"],
@@ -89,7 +93,6 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  let cleanupPathnames: string[] = [];
   try {
     applyOpenAIKeyAlias();
     if (!openAIConfigured()) return NextResponse.json({ code: "OPENAI_NOT_CONFIGURED", error: "OpenAI document extraction/checking is not configured.", retryable: true }, { status: 503 });
@@ -97,6 +100,7 @@ export async function POST(request: NextRequest) {
     const access = checkExaminerAccess(request);
     if (!access.ok) return NextResponse.json({ code: "AUTH_REQUIRED", error: access.error, retryable: false }, { status: access.status });
 
+    if (process.env.VERA_COMPLIANCE_MODE === "1" && !databaseConfigured()) return NextResponse.json({ error: "Durable job storage is required for client processing." }, { status: 503 });
     const instance = clientInstanceConfig();
     const contentType = request.headers.get("content-type") || "";
     let file: File;
@@ -105,6 +109,7 @@ export async function POST(request: NextRequest) {
     let clientName = instance.clientName;
 
     if (contentType.includes("multipart/form-data")) {
+      if (databaseConfigured()) return NextResponse.json({ error: "Upload the PDF to private storage before submitting a durable job." }, { status: 400 });
       const form = await request.formData();
       const files = form.getAll("files").filter((item): item is File => item instanceof File);
       if (!files.length) return NextResponse.json({ code: "NO_FILE", error: "No title-report PDF was uploaded." }, { status: 400 });
@@ -117,7 +122,14 @@ export async function POST(request: NextRequest) {
       const body = await request.json() as { blobPathnames?: string[]; state?: string; searchType?: string; clientName?: string };
       if (!body.blobPathnames?.length) return NextResponse.json({ code: "NO_FILE", error: "Provide one private title-report upload pathname." }, { status: 400 });
       if (body.blobPathnames.length !== 1) return NextResponse.json({ code: "TOO_MANY_FILES", error: "Each packet job accepts one title-report PDF. Batch QC creates one isolated job per packet." }, { status: 400 });
-      cleanupPathnames = body.blobPathnames;
+      assertUploadPaths(body.blobPathnames);
+      const scope = assertClientScope(body.clientName);
+      if (databaseConfigured()) {
+        if (body.state !== undefined && (typeof body.state !== "string" || body.state.length > 80)) return NextResponse.json({ error: "Invalid state." }, { status: 400 });
+        if (body.searchType !== undefined && (typeof body.searchType !== "string" || body.searchType.length > 100)) return NextResponse.json({ error: "Invalid search type." }, { status: 400 });
+        const job = await enqueueJob({ pathname: body.blobPathnames[0], state: body.state || AUTO_DETECT_STATE, searchType: body.searchType || AUTO_DETECT_SEARCH_TYPE, clientName: scope.clientName });
+        return NextResponse.json({ jobId: job.id, status: job.status }, { status: 202 });
+      }
       const files = await filesFromPrivateBlobs(body.blobPathnames);
       file = files[0];
       state = body.state || AUTO_DETECT_STATE;
@@ -143,14 +155,12 @@ export async function POST(request: NextRequest) {
       console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ engine: UNIFIED_TITLE_ENGINE_VERSION, code: providerFailure.code, message: message.slice(0, 600) }));
       return NextResponse.json(providerFailure, { status: providerFailure.status });
     }
-    const input = /^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):/.test(message);
+    const input = /^(INVALID_UPLOAD|CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):/.test(message);
     return NextResponse.json({
       code: input ? message.split(":", 1)[0] : "REVIEW_FAILED",
-      error: message.replace(/^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):\s*/, ""),
+      error: message.replace(/^(INVALID_UPLOAD|CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):\s*/, ""),
       retryable: !input,
       engine: UNIFIED_TITLE_ENGINE_VERSION,
     }, { status: input ? 400 : 500 });
-  } finally {
-    await deletePrivateBlobs(cleanupPathnames);
   }
 }

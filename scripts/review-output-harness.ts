@@ -68,4 +68,7 @@ assert.match(csv, /Vesting Deed Information/);
 assert.match(csv, /Vera Pass \/ Fail Determination/);
 assert.match(csv, /Pass: All applicable Vera review checks are resolved/);
 
-console.log("REVIEW_OUTPUT_HARNESS COMPLETE: 4/4 reviewed-output checks passed.");
+const unknownRecord = record();
+unknownRecord.foreclosureAnalysis.lienStack = [{ status: "UNKNOWN" }] as CanonicalTitleRecord["foreclosureAnalysis"]["lienStack"];
+assert.equal(buildVeraAccuracyAudit(unknownRecord, cleanQc).find((area) => area.key === "JUDGMENTS_LIENS")?.status, "INCOMPLETE", "Unknown lien status is uncertainty, not a confirmed discrepancy.");
+console.log("REVIEW_OUTPUT_HARNESS COMPLETE: reviewed output and unknown-lien classification checks passed.");

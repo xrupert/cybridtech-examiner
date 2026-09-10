@@ -1,7 +1,8 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { checkExaminerAccessCode } from "@/lib/examiner-auth";
+import { assertUploadPaths, MAX_UPLOAD_BYTES } from "@/lib/upload-paths";
 
-const ALLOWED_EXTENSIONS = /\.(pdf|txt|md)$/i;
+const ALLOWED_EXTENSIONS = /\.pdf$/i;
 
 export async function POST(request: Request): Promise<Response> {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: Request): Promise<Response> {
       body,
       request,
       onBeforeGenerateToken: async (pathname, clientPayload) => {
-        if (!ALLOWED_EXTENSIONS.test(pathname)) throw new Error("Cybrid Title accepts PDF, TXT, and MD title files only.");
+        if (!ALLOWED_EXTENSIONS.test(pathname)) throw new Error("Cybrid Title accepts PDF title files only.");
 
         let accessCode = "";
         try {
@@ -22,20 +23,20 @@ export async function POST(request: Request): Promise<Response> {
           accessCode = "";
         }
         if (!checkExaminerAccessCode(accessCode)) throw new Error("Unauthorized Cybrid Title upload.");
+        assertUploadPaths([pathname]);
 
         return {
           allowedContentTypes: [
             "application/pdf",
-            "text/plain",
-            "text/markdown",
             "application/octet-stream",
           ],
-          addRandomSuffix: true,
+          maximumSizeInBytes: MAX_UPLOAD_BYTES,
+          addRandomSuffix: false,
           tokenPayload: JSON.stringify({ purpose: "cybrid-title" }),
         };
       },
       onUploadCompleted: async () => {
-        // Processing routes delete temporary private blobs after OpenAI ingestion.
+        // Source uploads are retained until an explicit retention policy removes them.
       },
     });
     return Response.json(result);

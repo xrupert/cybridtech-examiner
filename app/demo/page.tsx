@@ -1,5 +1,7 @@
 "use client";
 
+import { ExaminerAccess } from "../components/ExaminerAccess";
+import { examinerFetch, examinerUploadPayload } from "@/lib/examiner-client";
 import { upload } from "@vercel/blob/client";
 import { useEffect, useMemo, useState } from "react";
 import { SEARCH_TYPES } from "@/lib/audit-rules";
@@ -7,8 +9,6 @@ import {
   AVAILABLE_EXPORT_COLUMNS,
   MCCALLA_EXPORT_PROFILE,
   createExportProfile,
-  renderCsv,
-  renderJson,
   validateExportProfile,
   type ExportColumn,
 } from "@/lib/export-profiles";
@@ -22,7 +22,7 @@ import styles from "./demo.module.css";
 
 type ReviewSearchType = "Auto Detect" | (typeof SEARCH_TYPES)[number];
 type ItemStatus = "queued" | "processing" | "complete" | "error";
-type Readiness = { openAIConfigured: boolean; largeFileStorageConfigured: boolean; authenticationMode?: string; engine?: string; extractionModel?: string; checkModel?: string; pipeline?: string[]; };
+type Readiness = { client?: { clientName: string; complianceMode: boolean }; openAIConfigured: boolean; largeFileStorageConfigured: boolean; authenticationMode?: string; engine?: string; extractionModel?: string; checkModel?: string; pipeline?: string[]; };
 type BatchItem = { id: string; manifestItemId: string; fileName: string; status: ItemStatus; review?: TitleReviewResult; error?: string; };
 type BatchManifest = { batchId: string; items: Array<{ itemId: string; sourceFile: string }>; };
 type DecisionRecord = SavedDecision & { reviewId?: string; actor?: string; decidedAt?: string };
@@ -39,6 +39,10 @@ function supplementalChecks(review?: TitleReviewResult): QcCheckResult[] { retur
 function isForeclosureReview(review?: TitleReviewResult): boolean { return Boolean(review && review.record.orderType.state === "CONFIRMED" && /^foreclosure$/i.test(review.record.orderType.value)); }
 
 export default function DemoPage() {
+  return <ExaminerAccess><ExaminerWorkbench /></ExaminerAccess>;
+}
+
+function ExaminerWorkbench() {
   const [clientName, setClientName] = useState("McCalla");
   const [searchType, setSearchType] = useState<ReviewSearchType>("Auto Detect");
   const [readiness, setReadiness] = useState<Readiness | null>(null);
@@ -53,7 +57,7 @@ export default function DemoPage() {
   const [decisions, setDecisions] = useState<DecisionMap>({});
   const [selectedColumns, setSelectedColumns] = useState<string[]>(MCCALLA_EXPORT_PROFILE.columns.map((column) => column.key));
 
-  useEffect(() => { fetch("/api/examine").then((response) => response.json()).then(setReadiness).catch(() => setReadiness(null)); }, []);
+  useEffect(() => { examinerFetch("/api/examine").then((response) => response.json()).then((value: Readiness) => { setReadiness(value); if (value.client?.complianceMode) setClientName(value.client.clientName); }).catch(() => setReadiness(null)); }, []);
   const availableColumns = useMemo(() => { const byKey = new Map<string, ExportColumn>(); AVAILABLE_EXPORT_COLUMNS.forEach((column) => byKey.set(column.key, column)); return [...byKey.values()]; }, []);
   const completeItems = useMemo(() => items.filter((item) => item.review), [items]);
   const selected = useMemo(() => items.find((item) => item.id === selectedId) || completeItems[0], [items, selectedId, completeItems]);
@@ -68,39 +72,74 @@ export default function DemoPage() {
   }
 
   async function createBatch(): Promise<BatchManifest> {
-    const response = await fetch("/api/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientName, sourceFiles: files.map((file) => file.name), exportProfileId: "mccalla-v3" }) });
+    const response = await examinerFetch("/api/batches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientName, sourceFiles: files.map((file) => file.name), exportProfileId: "mccalla-v3" }) });
     return parseResponse(response) as Promise<BatchManifest>;
   }
 
   async function updateBatch(manifestBatchId: string, item: BatchItem, status: "PROCESSING" | "COMPLETE" | "ERROR", review?: TitleReviewResult, message?: string) {
     if (!manifestBatchId || !item.manifestItemId) return;
-    await fetch("/api/batches", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ batchId: manifestBatchId, itemId: item.manifestItemId, status, reviewId: review?.record.reviewId, packetHash: review?.record.packetHash, error: message }) }).then(parseResponse);
+    await examinerFetch("/api/batches", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ batchId: manifestBatchId, itemId: item.manifestItemId, status, reviewId: review?.record.reviewId, packetHash: review?.record.packetHash, error: message }) }).then(parseResponse);
   }
 
   async function uploadOne(file: File, index: number, total: number) {
-    const pathname = `cybrid-title/canonical/${Date.now()}-${index}-${safeName(file.name)}.pdf`;
-    const result = await upload(pathname, file, { access: "private", handleUploadUrl: "/api/uploads", clientPayload: JSON.stringify({ mode: "canonical-title-platform" }), contentType: "application/pdf", multipart: file.size > 4_000_000, onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)) });
+    const intent = await examinerFetch("/api/upload-intents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: file.name }) }).then(parseResponse);
+    const pathname = intent.pathname as string;
+    const result = await upload(pathname, file, { access: "private", handleUploadUrl: "/api/uploads", clientPayload: examinerUploadPayload(), contentType: "application/pdf", multipart: file.size > 4_000_000, onUploadProgress: ({ percentage }) => setProgress(Math.round(((index + percentage / 100) / total) * 100)) });
     return result.pathname;
   }
+
+  async function waitForJob(jobId: string, signal?: AbortSignal) {
+    for (;;) {
+      if (signal?.aborted) throw new Error("Monitoring stopped.");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const response = await examinerFetch(`/api/jobs?id=${encodeURIComponent(jobId)}`, { signal });
+      if (response.status === 503) continue;
+      const job = await parseResponse(response);
+      if (job.status === "COMPLETE") return job.result;
+      if (job.status === "ERROR") { sessionStorage.removeItem("vera-pending-job"); throw new Error(job.error || "Job failed."); }
+    }
+  }
+
+  useEffect(() => {
+    const jobId = sessionStorage.getItem("vera-pending-job");
+    if (!jobId) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setNotice(`Resuming job ${jobId}.`);
+    waitForJob(jobId, controller.signal).then((data) => {
+      if (cancelled) return;
+      sessionStorage.removeItem("vera-pending-job");
+      if (data?.review) setItems([{ id: jobId, manifestItemId: "", fileName: data.review.record.sourceFile, status: "complete", review: data.review }]);
+    }).catch((error) => { if (!cancelled) setError(error instanceof Error ? error.message : "Could not resume job."); });
+    return () => { cancelled = true; controller.abort(); };
+  }, []);
 
   async function reviewOne(file: File, index: number, total: number): Promise<TitleReviewResult> {
     let response: Response;
     if (readiness?.largeFileStorageConfigured) {
       const pathname = await uploadOne(file, index, total);
-      response = await fetch("/api/examine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType, clientName }) });
+      response = await examinerFetch("/api/examine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blobPathnames: [pathname], state: "AUTO", searchType, clientName }) });
     } else {
       if (file.size > 4_000_000) throw new Error("Private large-file storage is required for this packet.");
       const form = new FormData(); form.append("files", file); form.set("state", "AUTO"); form.set("searchType", searchType); form.set("clientName", clientName);
-      response = await fetch("/api/examine", { method: "POST", body: form });
+      response = await examinerFetch("/api/examine", { method: "POST", body: form });
     }
-    const data = await parseResponse(response);
+    let data = await parseResponse(response);
+    if (data?.jobId) {
+      const jobId = data.jobId as string;
+      setNotice(`Processing job ${jobId}. Processing continues on the worker if this tab closes.`);
+      // Store only the opaque job ID so a refresh can resume monitoring.
+      sessionStorage.setItem("vera-pending-job", jobId);
+      data = await waitForJob(jobId);
+      sessionStorage.removeItem("vera-pending-job");
+    }
     if (!data?.review) throw new Error("Cybrid Title returned no canonical title review.");
     return data.review as TitleReviewResult;
   }
 
   async function loadSavedDecisions(reviewId: string) {
     try {
-      const response = await fetch(`/api/review-decisions?reviewId=${encodeURIComponent(reviewId)}`);
+      const response = await examinerFetch(`/api/review-decisions?reviewId=${encodeURIComponent(reviewId)}`);
       if (!response.ok) return;
       const manifest = await response.json() as { decisions?: DecisionRecord[] };
       const records = manifest.decisions || [];
@@ -160,7 +199,7 @@ export default function DemoPage() {
     const reason = `Examiner selected ${mortgage.instrumentNumber} as the foreclosure target after reviewing the competing security interests.`;
     try {
       setError("");
-      const response = await fetch("/api/review-decisions", {
+      const response = await examinerFetch("/api/review-decisions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: "TARGET_LIEN_FOUND", decision: "CORRECT", correctedStatus: "PASS", correctedValue: mortgage.instrumentNumber, reason }),
@@ -199,7 +238,7 @@ export default function DemoPage() {
     const clean = veraChecks(item.review).filter((check) => ["PASS", "NOT_APPLICABLE"].includes(check.status) && !decisionFor(item, check.id));
     for (const check of clean) {
       const reason = "Examiner confirmed this clean Vera finding against the displayed packet evidence.";
-      const response = await fetch("/api/review-decisions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: check.id, decision: "CONFIRM", reason }) });
+      const response = await examinerFetch("/api/review-decisions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewId: item.review.record.reviewId, checkId: check.id, decision: "CONFIRM", reason }) });
       if (!response.ok) { setError((await response.json().catch(() => null))?.error || `Could not confirm Vera Question ${check.legacyQuestionNumber}.`); return; }
       applySavedDecision(item, { checkId: check.id, decision: "CONFIRM", reason });
     }
@@ -222,6 +261,7 @@ export default function DemoPage() {
     if (!rows.length) return [];
     const warnings = [...validateExportProfile(exportProfile("csv"), rows)];
     for (const item of completeItems) {
+      if (item.review?.qc.curativeIssues.some((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW")) warnings.push(`${item.fileName}: unresolved physical pages prevent final release.`);
       const veraPending = pendingVera(item); const supplementalPending = pendingSupplemental(item);
       if (veraPending.length) warnings.push(`${item.fileName}: examiner disposition required for ${veraPending.map((check) => `Q${check.legacyQuestionNumber} ${check.label}`).join("; ")}.`);
       if (supplementalPending.length) warnings.push(`${item.fileName}: supplemental review required — ${supplementalPending.map((check) => `${check.label}: ${check.summary}`).join("; ")}.`);
@@ -230,19 +270,27 @@ export default function DemoPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, selectedColumns, completeItems, decisions, clientName, availableColumns]);
 
-  function exportCsv() { if (!rows.length || exportWarnings.length) return; downloadText(`${safeName(clientName)}-title-qc.csv`, renderCsv(exportProfile("csv"), rows), "text/csv;charset=utf-8"); }
-  function exportJson() { if (!rows.length || exportWarnings.length) return; downloadText(`${safeName(clientName)}-title-qc.json`, renderJson(exportProfile("json"), rows), "application/json;charset=utf-8"); }
+  async function downloadReviewedExport(format: "csv" | "json") {
+    if (!rows.length || exportWarnings.length) return;
+    try {
+      const response = await examinerFetch("/api/review-exports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewIds: completeItems.map((item) => item.review!.record.reviewId), columns: selectedColumns, format }) });
+      if (!response.ok) throw new Error((await response.json()).error || "Export could not be released.");
+      downloadText(`${safeName(clientName)}-title-qc.${format}`, await response.text(), format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8");
+    } catch (error) { setError(error instanceof Error ? error.message : "Export failed."); }
+  }
+  function exportCsv() { return downloadReviewedExport("csv"); }
+  function exportJson() { return downloadReviewedExport("json"); }
   const modelStatus = readiness?.openAIConfigured ? `${readiness.extractionModel || "extraction model"} → ${readiness.checkModel || "check model"}` : readiness ? "AI not configured" : "Checking system…";
 
   const selectedVera = veraChecks(selected?.review);
   const selectedSupplemental = supplementalChecks(selected?.review);
   const selectedVeraReviewed = selected ? selectedVera.filter((check) => decisionFor(selected, check.id)).length : 0;
-  const selectedReviewComplete = selected ? pendingVera(selected).length === 0 && pendingSupplemental(selected).length === 0 : false;
+  const selectedReviewComplete = selected ? pendingVera(selected).length === 0 && pendingSupplemental(selected).length === 0 && !selected.review?.qc.curativeIssues.some((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW") : false;
 
   return <div className={styles.shell}>
-    <header className={styles.nav}><div className={styles.brand}><Logo height={40} /><span className={styles.brandName}>Cybrid Title</span></div><span className={styles.navTag}>Title Examination · Vera 20 · Evidence Reconciliation · Curative</span></header>
+    <header className={styles.nav}><div className={styles.brand}><Logo height={72} /><span className={styles.brandName}>Cybrid Title</span></div><span className={styles.navTag}>Title Examination · Vera 20 · Evidence Reconciliation · Curative</span></header>
     <main className={styles.main}>
-      <div className={styles.printBrand}><div className={styles.printBrandIdentity}><Logo height={54} /><div><strong>Cybrid Title</strong><span>Evidence-backed Title Examination</span></div></div><div className={styles.printBrandMeta}>Examiner Review{selected?.review ? ` · ${selected.review.record.tsNumber.value}` : ""}</div></div>
+      <div className={styles.printBrand}><div className={styles.printBrandIdentity}><Logo height={90} /><div><strong>Cybrid Title</strong><span>Evidence-backed Title Examination</span></div></div><div className={styles.printBrandMeta}>Examiner Review{selected?.review ? ` · ${selected.review.record.tsNumber.value}` : ""}</div></div>
       <section className={styles.hero}><div><p className={styles.eyebrow}>Title examiner intelligence workbench</p><h1>Find the title truth. Verify the source. Resolve what prevents the next action.</h1></div><p>Cybrid prepares the Vera 20 examination, reconciles the report to the recorded source documents, develops lien identity and priority only when the order requires it, and turns unresolved findings into a clear examiner or curative work queue before export.</p></section>
 
       <section className={`${styles.panel} ${styles.setupPanel}`}><div className={styles.setup}>

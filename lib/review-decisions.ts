@@ -1,3 +1,6 @@
+import { database, databaseConfigured } from "./database";
+import { clientInstanceConfig } from "./client-instance";
+import { clientBlobPrefix } from "./client-instance";
 import { get, put } from "@vercel/blob";
 import type { QcStatus } from "./title-domain";
 
@@ -21,13 +24,18 @@ export interface ReviewDecisionManifest {
   updatedAt: string;
 }
 
-const PREFIX = "cybrid-title/review-decisions-v1";
+
 
 function path(reviewId: string): string {
-  return `${PREFIX}/${encodeURIComponent(reviewId)}.json`;
+  return `${clientBlobPrefix("review-decisions-v1")}/${encodeURIComponent(reviewId)}.json`;
 }
 
 export async function loadReviewDecisions(reviewId: string): Promise<ReviewDecisionManifest> {
+  if (databaseConfigured()) {
+    const result = await database().query("SELECT DISTINCT ON(check_id) decision FROM vera_decision_events WHERE client_id=$1 AND review_id=$2 ORDER BY check_id,sequence DESC", [clientInstanceConfig().clientId, reviewId]);
+    const decisions = result.rows.map((row) => row.decision as ReviewDecisionRecord);
+    return { version: 1, reviewId, decisions, updatedAt: decisions.map((d) => d.decidedAt).sort().at(-1) || new Date(0).toISOString() };
+  }
   if (!process.env.BLOB_READ_WRITE_TOKEN) return { version: 1, reviewId, decisions: [], updatedAt: new Date(0).toISOString() };
   try {
     const result = await get(path(reviewId), { access: "private" });
@@ -42,10 +50,18 @@ export async function loadReviewDecisions(reviewId: string): Promise<ReviewDecis
 
 export async function saveReviewDecision(input: Omit<ReviewDecisionRecord, "decidedAt">): Promise<ReviewDecisionManifest> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error("Persistent review decisions require the private Cybrid Title Blob store.");
+  if (!["CONFIRM", "CORRECT", "NEEDS_EVIDENCE"].includes(input.decision)) throw new Error("Invalid examiner decision.");
+  if (input.correctedStatus !== undefined && !["PASS", "FAIL", "CANNOT_CONFIRM", "NOT_APPLICABLE"].includes(input.correctedStatus)) throw new Error("Invalid corrected status.");
   if (!input.reviewId.trim() || !input.checkId.trim()) throw new Error("reviewId and checkId are required.");
   if (input.decision === "CORRECT" && !input.correctedStatus) throw new Error("A corrected status is required when correcting a finding.");
   if (!input.reason.trim()) throw new Error("A decision reason is required.");
 
+  if (databaseConfigured()) {
+    const decision = { ...input, decidedAt: new Date().toISOString() };
+    await database().query("INSERT INTO vera_decision_events(client_id,review_id,check_id,decision) VALUES($1,$2,$3,$4)", [clientInstanceConfig().clientId, input.reviewId, input.checkId, decision]);
+    return loadReviewDecisions(input.reviewId);
+  }
+  if (process.env.VERA_COMPLIANCE_MODE === "1") throw new Error("Durable decision storage is required.");
   const current = await loadReviewDecisions(input.reviewId);
   const decision: ReviewDecisionRecord = { ...input, decidedAt: new Date().toISOString() };
   const decisions = [...current.decisions.filter((item) => item.checkId !== input.checkId), decision];

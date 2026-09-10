@@ -1,3 +1,6 @@
+import asyncio
+from starlette.responses import JSONResponse
+import hmac
 import io
 import os
 import re
@@ -13,6 +16,22 @@ from fastapi import FastAPI, File, Header, HTTPException, Query, Request, Upload
 from PIL import Image
 
 app = FastAPI(title="Vera OCR Gateway", version="1.1.0")
+OCR_SLOTS = asyncio.Semaphore(1)
+MAX_PIXELS = 25_000_000
+
+@app.middleware("http")
+async def admit_ocr(request: Request, call_next):
+    if not request.url.path.startswith("/ocr/"):
+        return await call_next(request)
+    try:
+        await asyncio.wait_for(OCR_SLOTS.acquire(), timeout=0.05)
+    except asyncio.TimeoutError:
+        return JSONResponse({"detail": "OCR worker busy; retry later"}, status_code=429, headers={"Retry-After": "5"})
+    try:
+        return await call_next(request)
+    finally:
+        OCR_SLOTS.release()
+
 
 MAX_IMAGE_BYTES = int(os.getenv("VERA_OCR_MAX_IMAGE_BYTES", str(25 * 1024 * 1024)))
 MAX_PDF_BYTES = int(os.getenv("VERA_OCR_MAX_PDF_BYTES", str(500 * 1024 * 1024)))
@@ -35,8 +54,8 @@ TITLE_SIGNALS = re.compile(
 def _require_auth(authorization: Optional[str]) -> None:
     expected = os.getenv("VERA_OCR_API_KEY", "").strip()
     if not expected:
-        return
-    if authorization != f"Bearer {expected}":
+        raise HTTPException(status_code=503, detail="OCR authentication is not configured")
+    if not hmac.compare_digest(authorization or "", f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -113,6 +132,7 @@ def _tesseract_image(image: Image.Image) -> dict:
                 lang=language,
                 config=f"--oem 1 --psm {psm}",
                 output_type=pytesseract.Output.DICT,
+                timeout=30,
             )
             lines = []
             current_key = None
@@ -221,19 +241,24 @@ async def _upstream_turbo_pdf(pdf_bytes: bytes, requested: list[int], dpi: int) 
 
 
 async def _ocr_bytes(image_bytes: bytes) -> dict:
-    upstream = await _upstream_turbo(image_bytes)
+    try:
+        upstream = await _upstream_turbo(image_bytes)
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        upstream = None
     if upstream:
         return {"provider": "turboocr", "text": upstream["text"], "confidence": upstream["confidence"], "attempts": [{"engine": "turboocr", "status": "accepted"}]}
 
     try:
         image = Image.open(io.BytesIO(image_bytes))
+        if image.width * image.height > MAX_PIXELS:
+            raise ValueError("Image exceeds pixel budget")
         image.load()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
     ink = _ink_ratio(image)
     if ink <= BLANK_INK_RATIO:
         return {"provider": "tesseract", "text": "", "confidence": 1.0, "accepted": True, "blank": True, "attempts": [{"engine": "blank-detector", "status": "blank", "inkRatio": ink}]}
-    result = _tesseract_image(image)
+    result = await asyncio.to_thread(_tesseract_image, image)
     accepted = len(result["text"]) >= MIN_CHARS and result["confidence"] >= MIN_CONFIDENCE
     return {
         "provider": "tesseract",
@@ -263,7 +288,12 @@ async def health():
 @app.post("/ocr/raw")
 async def ocr_raw(request: Request, authorization: Optional[str] = Header(default=None)):
     _require_auth(authorization)
-    body = await request.body()
+    chunks = bytearray()
+    async for chunk in request.stream():
+        if len(chunks) + len(chunk) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Image exceeds configured size limit")
+        chunks.extend(chunk)
+    body = bytes(chunks)
     if not body:
         raise HTTPException(status_code=400, detail="Image body is required")
     if len(body) > MAX_IMAGE_BYTES:
@@ -290,7 +320,7 @@ async def ocr_pdf(
     authorization: Optional[str] = Header(default=None),
 ):
     _require_auth(authorization)
-    pdf_bytes = await file.read()
+    pdf_bytes = await file.read(MAX_PDF_BYTES + 1)
     if not pdf_bytes:
         raise HTTPException(status_code=400, detail="PDF is empty")
     if len(pdf_bytes) > MAX_PDF_BYTES:
@@ -334,19 +364,24 @@ async def ocr_pdf(
                 })
                 continue
             tesseract_budget -= 1
-            page = document.load_page(page_number - 1)
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
-            image_bytes = pix.tobytes("png")
-            result = await _ocr_bytes(image_bytes)
-            output.append({
-                "page": page_number,
-                "processed": True,
-                "blank": bool(result.get("blank", False)),
-                "text": result.get("text", ""),
-                "confidence": result.get("confidence", 0.0),
-                "provider": result.get("provider", "tesseract"),
-                "attempts": result.get("attempts", []),
-            })
+            try:
+                page = document.load_page(page_number - 1)
+                if page.rect.width * page.rect.height * (dpi / 72.0) ** 2 > MAX_PIXELS:
+                    raise ValueError("Rendered page exceeds pixel budget")
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                image_bytes = pix.tobytes("png")
+                result = await _ocr_bytes(image_bytes)
+                output.append({
+                    "page": page_number,
+                    "processed": True,
+                    "blank": bool(result.get("blank", False)),
+                    "text": result.get("text", ""),
+                    "confidence": result.get("confidence", 0.0),
+                    "provider": result.get("provider", "tesseract"),
+                    "attempts": result.get("attempts", []),
+                })
+            except Exception:
+                output.append({"page": page_number, "processed": False, "blank": False, "text": "", "confidence": 0.0, "provider": "tesseract", "attempts": [{"engine": "page-ocr", "status": "failed", "reason": "Page extraction failed; manual review required."}]})
     finally:
         document.close()
     return {"pageCount": len(requested), "pages": output, "turboPdfRecovered": len(turbo_pages)}

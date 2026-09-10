@@ -4,22 +4,27 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "verify": "tsx scripts/page-ocr-routing-harness.ts && tsx scripts/vera-unified-harness.ts && tsx scripts/architecture-harness-v4.ts && tsx scripts/lien-intelligence-harness.ts && tsx scripts/one-owner-fallback-harness.ts && tsx scripts/munger-inversion-harness.ts && tsx scripts/examiner-workflow-harness.ts",
+    "verify": "tsx scripts/capacity-harness.ts && tsx scripts/security-correctness-harness.ts && tsx scripts/review-output-harness.ts && tsx scripts/page-ocr-routing-harness.ts && tsx scripts/vera-unified-harness.ts && tsx scripts/architecture-harness-v4.ts && tsx scripts/lien-intelligence-harness.ts && tsx scripts/one-owner-fallback-harness.ts && tsx scripts/munger-inversion-harness.ts && tsx scripts/examiner-workflow-harness.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run verify && next build",
     "ci": "npm run verify && npm run typecheck && next build",
-    "start": "next start"
+    "start": "next start",
+    "worker": "node --import tsx scripts/worker.ts",
+    "migrate": "node --import tsx scripts/migrate.ts",
+    "test:durability": "node --import tsx scripts/durability-harness.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.0.8",
     "@vercel/blob": "2.8.0",
     "next": "15.5.24",
     "pdfjs-dist": "5.4.149",
+    "pg": "8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@types/node": "22.17.0",
+    "@types/pg": "8.23.1",
     "@types/react": "19.1.9",
     "@types/react-dom": "19.1.7",
     "tsx": "4.23.12",

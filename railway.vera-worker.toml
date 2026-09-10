@@ -1,0 +1,6 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "services/vera-worker/Dockerfile"
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

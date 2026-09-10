@@ -1,3 +1,4 @@
+import { checkExaminerAccess } from "@/lib/examiner-auth";
 import { NextResponse } from "next/server";
 import { reviewTitlePdf } from "@/lib/canonical-title-engine";
 
@@ -38,7 +39,10 @@ function makeScannedTruthPacket(): ArrayBuffer {
   return pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength) as ArrayBuffer;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (process.env.VERA_ENABLE_ACCEPTANCE_ROUTE !== "1") return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const access = checkExaminerAccess(request);
+  if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
   try {
     const packet = makeScannedTruthPacket();
     const execution = await reviewTitlePdf(packet, "synthetic-scanned-current-owner.pdf", {

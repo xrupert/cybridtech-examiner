@@ -1,3 +1,6 @@
+import { buildTitleEvidenceGraph } from "./title-evidence-graph";
+import { loadReviewDecisions } from "./review-decisions";
+import { projectReviewedResult } from "./review-release";
 import { loadReviewDossier, type ReviewDossier } from "./review-dossier";
 
 const OPENAI_API = "https://api.openai.com/v1";
@@ -187,13 +190,15 @@ const answerSchema = {
 } as const;
 
 export async function askVera(reviewId: string, question: string): Promise<AskVeraAnswer> {
-  const dossier = await loadReviewDossier(reviewId);
+  const storedDossier = await loadReviewDossier(reviewId);
+  const reviewed = storedDossier ? projectReviewedResult(storedDossier.review, (await loadReviewDecisions(reviewId)).decisions) : null;
+  const dossier = storedDossier && reviewed ? { ...storedDossier, review: reviewed, graph: buildTitleEvidenceGraph(reviewed, storedDossier.evidenceLedger) } : null;
   if (!dossier) throw new Error("REVIEW_DOSSIER_NOT_FOUND: this review does not have a persisted evidence dossier.");
   const cleanQuestion = compact(question).slice(0, 3000);
   if (!cleanQuestion) throw new Error("QUESTION_REQUIRED: ask a specific question about the reviewed packet.");
 
   const retrieved = retrieve(cleanQuestion, dossier);
-  const unresolved = new Set(dossier.pageLedger.lowTextPages);
+  const unresolved = new Set([...dossier.pageLedger.lowTextPages, ...dossier.pageLedger.ocrSkippedPages]);
   const context = {
     reviewId,
     packetHash: dossier.packetHash,
@@ -220,6 +225,7 @@ export async function askVera(reviewId: string, question: string): Promise<AskVe
   if (!key) throw new Error("OPENAI_NOT_CONFIGURED: Ask Vera requires the configured review model.");
   const response = await fetch(`${OPENAI_API}/responses`, {
     method: "POST",
+    signal: AbortSignal.timeout(120_000),
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: model(),

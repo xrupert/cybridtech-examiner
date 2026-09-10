@@ -1,7 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 
 export function testingAccessBypassEnabled(): boolean {
-  return process.env.EXAMINER_REQUIRE_ACCESS_CODE !== "true";
+  return process.env.NODE_ENV === "development"
+    && process.env.VERA_COMPLIANCE_MODE !== "1"
+    && !process.env.VERCEL
+    && process.env.EXAMINER_REQUIRE_ACCESS_CODE === "false";
 }
 
 export function accessProtectionConfigured(): boolean {

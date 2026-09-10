@@ -1,3 +1,5 @@
+import { checkpoint } from "./durable-jobs";
+import { createHash } from "node:crypto";
 import type { ExtractedPage, PreparedPacket } from "./document-engine";
 import { extractPdfTitlePacket, titleExtractionModel } from "./openai-title-extractor";
 import { buildEvidenceLedger } from "./title-evidence-ledger";
@@ -242,7 +244,7 @@ function pageText(page: ExtractedPage): string {
   return `${marker}\n${page.text}`;
 }
 
-function makeShards(pages: ExtractedPage[]): ExtractedPage[][] {
+export function makeShards(pages: ExtractedPage[]): ExtractedPage[][] {
   const base: ExtractedPage[][] = [];
   let current: ExtractedPage[] = [];
   let chars = 0;
@@ -270,7 +272,7 @@ function shardPrepared(original: PreparedPacket, pages: ExtractedPage[]): Prepar
   };
 }
 
-async function mapConcurrent<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+export async function mapConcurrent<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let cursor = 0;
   const worker = async () => {
@@ -279,7 +281,9 @@ async function mapConcurrent<T, R>(items: T[], concurrency: number, fn: (item: T
       results[index] = await fn(items[index], index);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, items.length)) }, () => worker()));
+  const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, Math.max(1, items.length)) }, () => worker()));
+  const failure = settled.find((item) => item.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
   return results;
 }
 
@@ -294,11 +298,13 @@ export async function extractPdfTitlePacketScalable(
   prepared: PreparedPacket,
   hints: { requestedState?: string; requestedSearchType?: string } = {},
 ): Promise<ExtractedTitlePacket> {
-  if (!shouldShardTitlePacket(prepared)) return extractPdfTitlePacket(buffer, sourceFile, prepared, hints);
+  const cacheKey = (value: string) => `extraction-v1:${titleExtractionModel()}:${createHash("sha256").update(JSON.stringify(hints)).update(value).digest("hex")}`;
+  if (!shouldShardTitlePacket(prepared)) return checkpoint(cacheKey(prepared.pageDelimitedText || prepared.packetHash), () => extractPdfTitlePacket(buffer, sourceFile, prepared, hints));
 
   const shards = makeShards(prepared.ledger.pages);
   const outputs = await mapConcurrent(shards, shardConcurrency(), async (pages, index) => {
-    const result = await extractPdfTitlePacket(buffer, `${sourceFile} [shard ${index + 1}/${shards.length}]`, shardPrepared(prepared, pages), hints);
+    const part = shardPrepared(prepared, pages);
+    const result = await checkpoint(cacheKey(part.pageDelimitedText || ""), () => extractPdfTitlePacket(buffer, `${sourceFile} [shard ${index + 1}/${shards.length}]`, part, hints));
     return result;
   });
   const merged = mergeExtractions(outputs.map((item) => item.extraction));
