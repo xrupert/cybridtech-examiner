@@ -1,26 +1,30 @@
-import { preparePdfPacket } from "./document-engine";
+import { preparePdfPacket, type PacketExtractionLedger } from "./document-engine";
+import { preservePartialPacketEvidence } from "./partial-packet";
+import { recoverPreparedPacketRemotely } from "./remote-pdf-recovery";
 import { buildCanonicalTitleRecordFromExtraction } from "./canonical-title-builder";
 import { initialCanonicalQc, applyCheckerResolutions } from "./canonical-qc-engine";
 import { jurisdictionAnalysisForRecord, mergeJurisdictionRequirements } from "./jurisdiction-rules";
 import { ledgerEvidenceByIds } from "./title-evidence-ledger";
-import { extractPdfTitlePacket } from "./openai-title-extractor";
+import { extractPdfTitlePacketScalable } from "./sharded-title-extractor";
 import { resolveSemanticChecks } from "./openai-title-checker";
 import { reconcileRunSheet, reconcileTitleSummary, type RunSheetReconciliation } from "./run-sheet-reconciler";
 import { createPipelineState, advancePipeline, assertCanonicalPipeline, type PipelineState } from "./pipeline";
 import { recordCanonicalReview } from "./canonical-review-history";
 import { reduceQcChecks } from "./title-qc-engine";
+import { applyDocumentIntegrityGuard, summarizeDocumentIntegrity, type DocumentIntegritySummary } from "./document-integrity";
+import { saveReviewDossier } from "./review-dossier";
 import type { CanonicalTitleRecord, TitleReviewResult } from "./title-domain";
 import type { TitleEvidenceLedger } from "./title-extraction-model";
 
-export const CANONICAL_TITLE_ENGINE_VERSION = "cybrid-title-canonical-v4";
+export const UNIFIED_TITLE_ENGINE_VERSION = "cybrid-title-vera-unified-v1";
 
-export interface CanonicalReviewOptions {
+export interface UnifiedReviewOptions {
   clientName?: string;
   requestedState?: string;
   requestedSearchType?: string;
 }
 
-export interface CanonicalReviewDiagnostics {
+export interface UnifiedReviewDiagnostics {
   packetHash: string;
   pageCount: number;
   nativeTextCoverage: number;
@@ -43,13 +47,16 @@ export interface CanonicalReviewDiagnostics {
   textVerifiedEvidenceNodes: number;
   titleSummaryReconciliation: RunSheetReconciliation;
   runSheetReconciliation: RunSheetReconciliation;
+  documentIntegrity: DocumentIntegritySummary;
+  dossierPersisted: boolean;
   pipeline: PipelineState;
 }
 
-export interface CanonicalReviewExecution {
+export interface UnifiedReviewExecution {
   review: TitleReviewResult;
   ledger: TitleEvidenceLedger;
-  diagnostics: CanonicalReviewDiagnostics;
+  pageLedger: PacketExtractionLedger;
+  diagnostics: UnifiedReviewDiagnostics;
 }
 
 function normalizeReportRunSheetBounds(record: CanonicalTitleRecord): void {
@@ -64,21 +71,31 @@ function normalizeReportRunSheetBounds(record: CanonicalTitleRecord): void {
   record.titleSummary.basis = `${record.titleSummary.basis} For RCS report formats this opening title/Exceptions section is the report run sheet used for Vera Question 20; a separately labeled Abstractor/Run Sheet remains distinct.`;
 }
 
-export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, options: CanonicalReviewOptions = {}): Promise<CanonicalReviewExecution> {
+export async function reviewTitlePdfUnified(buffer: ArrayBuffer, sourceFile: string, options: UnifiedReviewOptions = {}): Promise<UnifiedReviewExecution> {
   let pipeline = createPipelineState();
   pipeline = advancePipeline(pipeline, "INGEST", `Accepted exact source packet ${sourceFile}`);
 
-  const prepared = await preparePdfPacket(buffer.slice(0), sourceFile);
-  const extracted = await extractPdfTitlePacket(buffer, sourceFile, prepared, {
+  // Native/page-local extraction runs first. If pages remain unresolved and a
+  // dedicated OCR worker is configured, only those pages are escalated outside
+  // Vercel. The resulting packet still preserves every original physical page.
+  const localPrepared = await preparePdfPacket(buffer.slice(0), sourceFile);
+  const recoveredPrepared = await recoverPreparedPacketRemotely(buffer.slice(0), localPrepared);
+  const prepared = preservePartialPacketEvidence(recoveredPrepared);
+  const documentIntegrity = summarizeDocumentIntegrity(prepared.ledger);
+
+  // Large packets are partitioned into bounded, slightly-overlapping physical
+  // page shards. Each shard produces the same strict title JSON schema and the
+  // merge is deterministic before QC. Small packets keep the original path.
+  const extracted = await extractPdfTitlePacketScalable(buffer, sourceFile, prepared, {
     requestedState: options.requestedState,
     requestedSearchType: options.requestedSearchType,
   });
-  pipeline = advancePipeline(pipeline, "EXTRACT", `${extracted.ledger.evidence.length} evidence nodes extracted using ${extracted.ledger.extractionMode}`);
+  pipeline = advancePipeline(pipeline, "EXTRACT", `${extracted.ledger.evidence.length} evidence nodes extracted using ${extracted.ledger.extractionMode}; document integrity=${documentIntegrity.state}`);
 
   const record = buildCanonicalTitleRecordFromExtraction({
     extraction: extracted.extraction,
     ledger: extracted.ledger,
-    clientName: options.clientName || "McCalla",
+    clientName: options.clientName || "Client",
     requestedState: options.requestedState,
     requestedSearchType: options.requestedSearchType,
   });
@@ -102,7 +119,9 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
         ...check,
         status: "CANNOT_CONFIRM" as const,
         summary: `Cannot Confirm — conclusive result lacked grounded source evidence: ${check.summary}`,
-        recommendedAction: check.recommendedAction === "No curative action required for this check." ? "Review the source evidence required to support this check." : check.recommendedAction,
+        recommendedAction: check.recommendedAction === "No curative action required for this check."
+          ? "Review the source evidence required to support this check."
+          : check.recommendedAction,
       };
     }
     return check;
@@ -111,12 +130,17 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
   pipeline = advancePipeline(pipeline, "GROUND", `${groundedQc.checks.filter((check) => check.evidence.length).length}/${groundedQc.checks.length} checks carry source evidence; unsupported conclusions fail closed`);
 
   let review: TitleReviewResult = {
-    engineVersion: CANONICAL_TITLE_ENGINE_VERSION,
+    engineVersion: UNIFIED_TITLE_ENGINE_VERSION,
     record,
     qc: groundedQc,
     pipeline: { stages: ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD"], completedThrough: "RECORD" },
   };
-  pipeline = advancePipeline(pipeline, "RENDER", "Canonical Vera-20 review, lien analysis, jurisdiction actions, and export result prepared");
+
+  // Unreadability is a document-integrity problem, not a title defect. Keep an
+  // independently grounded critical FAIL, but otherwise route uncertainty to
+  // CANNOT_CONFIRM / examiner review instead of killing the packet.
+  review = applyDocumentIntegrityGuard(review, prepared.ledger);
+  pipeline = advancePipeline(pipeline, "RENDER", "Canonical Vera-20 review, document-integrity guard, lien analysis, jurisdiction actions, and export result prepared");
 
   review = await recordCanonicalReview(review, {
     pageCount: prepared.ledger.pageCount,
@@ -129,11 +153,23 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     extractionModel: extracted.model,
     checkModel: checker.model,
   });
-  pipeline = advancePipeline(pipeline, "RECORD", `Review receipt persisted/assigned as ${review.record.reviewId}`);
-  pipeline = advancePipeline(pipeline, "COMPLETE", `Review readiness=${review.qc.foreclosureReadiness}`);
+
+  let dossierPersisted = false;
+  try {
+    await saveReviewDossier({ review, evidenceLedger: extracted.ledger, pageLedger: prepared.ledger });
+    dossierPersisted = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+  } catch (error) {
+    console.warn("CYBRID_TITLE_DOSSIER_WRITE_FAILED", JSON.stringify({
+      reviewId: review.record.reviewId,
+      message: error instanceof Error ? error.message : "unknown",
+    }));
+  }
+
+  pipeline = advancePipeline(pipeline, "RECORD", `Review receipt assigned as ${review.record.reviewId}; evidence dossier persisted=${dossierPersisted}`);
+  pipeline = advancePipeline(pipeline, "COMPLETE", `Review readiness=${review.qc.foreclosureReadiness}; integrity=${documentIntegrity.state}`);
   assertCanonicalPipeline(pipeline);
 
-  const diagnostics: CanonicalReviewDiagnostics = {
+  const diagnostics: UnifiedReviewDiagnostics = {
     packetHash: prepared.packetHash,
     pageCount: prepared.ledger.pageCount,
     nativeTextCoverage: prepared.ledger.nativeTextCoverage,
@@ -156,34 +192,25 @@ export async function reviewTitlePdf(buffer: ArrayBuffer, sourceFile: string, op
     textVerifiedEvidenceNodes: extracted.ledger.evidence.filter((node) => node.textVerified).length,
     titleSummaryReconciliation,
     runSheetReconciliation,
+    documentIntegrity,
+    dossierPersisted,
     pipeline,
   };
 
-  console.info("CYBRID_TITLE_CANONICAL_REVIEW_COMPLETE", JSON.stringify({
+  console.info("CYBRID_TITLE_UNIFIED_REVIEW_COMPLETE", JSON.stringify({
     reviewId: review.record.reviewId,
     packetHash: prepared.packetHash,
     sourceFile,
-    orderType: review.record.orderType.value,
-    state: review.record.state.value,
-    county: review.record.county.value,
     pageCount: prepared.ledger.pageCount,
     extractionMode: extracted.ledger.extractionMode,
-    nativeTextCoverage: prepared.ledger.nativeTextCoverage,
-    textCoverage: prepared.ledger.textCoverage,
+    integrity: documentIntegrity.state,
+    unresolvedPages: documentIntegrity.unresolvedPages,
     ocrRecoveredPages: prepared.ledger.ocrRecoveredPages,
-    ocrProvidersUsed: prepared.ledger.ocrProvidersUsed,
     evidenceNodes: extracted.ledger.evidence.length,
-    textVerifiedEvidenceNodes: diagnostics.textVerifiedEvidenceNodes,
-    reportRunSheetDetected: record.titleSummary.detected,
-    reportRunSheetPages: [record.titleSummary.pageStart, record.titleSummary.pageEnd],
-    distinctRunSheetDetected: record.runSheet.detected,
-    titleSummaryMismatches: titleSummaryReconciliation.mismatched,
-    veraQuestionCount: review.qc.checks.filter((check) => check.legacyQuestionNumber).length,
-    jurisdictionCoverage: record.foreclosureAnalysis.jurisdictionCoverage?.status,
     qcStatus: review.qc.qcStatus,
     reviewReadiness: review.qc.foreclosureReadiness,
-    curativeIssues: review.qc.curativeIssues.length,
+    dossierPersisted,
   }));
 
-  return { review, ledger: extracted.ledger, diagnostics };
+  return { review, ledger: extracted.ledger, pageLedger: prepared.ledger, diagnostics };
 }

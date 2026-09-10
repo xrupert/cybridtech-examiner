@@ -3,6 +3,7 @@
 import type { QcCheckResult, TitleReviewResult } from "@/lib/title-domain";
 import { buildVeraAccuracyAudit, veraPassFailReason } from "@/lib/vera-accuracy-audit";
 import { ReviewDecisionControls, type ExaminerDecision, type SavedDecision } from "./ReviewDecisionControls";
+import { AskVera } from "./AskVera";
 import styles from "./ProfessionalReviewReport.module.css";
 
 const QUESTION_TITLES: Record<number, string> = {
@@ -224,6 +225,8 @@ export function ProfessionalReviewReport({
       {foreclosureActions.length ? <p><strong>Required cure / next action:</strong> {unique(foreclosureActions).join(" ")}</p> : null}
       {!reviewComplete ? <p className={styles.provisional}><strong>Review Status:</strong> Examiner dispositions are incomplete; this determination remains provisional and the professional review document remains blocked from final release.</p> : null}
     </section>
+
+    <div className={styles.screenOnly}><AskVera reviewId={record.reviewId} onOpenSource={onOpenSource} /></div>
 
     <footer className={styles.footer}>
       <span>Source: {fileName}</span><span>Review ID: {record.reviewId}</span>

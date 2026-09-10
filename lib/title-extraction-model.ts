@@ -1,5 +1,7 @@
 import type { EvidenceSource } from "./vera";
 
+export type EvidenceVerificationSource = "native" | "tesseract" | "turboocr" | "openai-page-vision";
+
 export interface RawEvidenceAnchor {
   quote: string;
   page: number;
@@ -111,14 +113,16 @@ export interface EvidenceNode {
   source: EvidenceSource;
   confidence: number;
   nativeVerified: boolean;
+  textVerified: boolean;
+  verificationSource?: EvidenceVerificationSource;
 }
 
 export interface TitleEvidenceLedger {
-  version: 1;
+  version: 2;
   packetHash: string;
   sourceFile: string;
   pageCount: number;
-  extractionMode: "native-text" | "openai-pdf-vision" | "pasted-text";
+  extractionMode: "native-text" | "hybrid-page-ocr" | "openai-pdf-vision" | "pasted-text";
   evidence: EvidenceNode[];
   runSheetPages: number[];
   createdAt: string;

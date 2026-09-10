@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AUDIT_RULE_VERSION, SEARCH_TYPES } from "@/lib/audit-rules";
-import { reviewTitlePdf, CANONICAL_TITLE_ENGINE_VERSION } from "@/lib/canonical-title-engine";
+import { reviewTitlePdfUnified, UNIFIED_TITLE_ENGINE_VERSION } from "@/lib/unified-title-engine";
 import { titleExtractionModel } from "@/lib/openai-title-extractor";
 import { accessProtectionConfigured, checkExaminerAccess, examinerAuthenticationMode } from "@/lib/examiner-auth";
 import { deletePrivateBlobs, filesFromPrivateBlobs } from "@/lib/blob-files";
 import { classifyOpenAIProviderFailure } from "@/lib/openai-provider-error";
+import { assertClientScope, clientInstanceConfig, clientPublicDescriptor } from "@/lib/client-instance";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -30,7 +31,7 @@ async function reviewFile(file: File, args: { state: string; searchType: string;
   validatePdf(file);
   const buffer = await file.arrayBuffer();
   if (!buffer.byteLength) throw new Error(`EMPTY_PACKET: ${file.name} is empty.`);
-  return reviewTitlePdf(buffer, file.name, {
+  return reviewTitlePdfUnified(buffer, file.name, {
     clientName: args.clientName,
     requestedState: args.state,
     requestedSearchType: args.searchType,
@@ -39,9 +40,11 @@ async function reviewFile(file: File, args: { state: string; searchType: string;
 
 export async function GET() {
   applyOpenAIKeyAlias();
+  const client = clientPublicDescriptor();
   return NextResponse.json({
     product: "Cybrid Title",
-    engine: CANONICAL_TITLE_ENGINE_VERSION,
+    engine: UNIFIED_TITLE_ENGINE_VERSION,
+    client,
     openAIConfigured: openAIConfigured(),
     openAIKeyAliasAccepted: Boolean(process.env.OPEN_AI_KEY),
     authenticationMode: examinerAuthenticationMode(),
@@ -49,13 +52,16 @@ export async function GET() {
     largeFileStorageConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
     extractionModel: titleExtractionModel(),
     checkModel: process.env.OPENAI_CHECK_MODEL || process.env.OPENAI_REVIEW_MODEL || "gpt-5.6-sol",
+    askVeraConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN && openAIConfigured()),
     maxReviewDurationSeconds: maxDuration,
     ruleVersion: AUDIT_RULE_VERSION,
     pipeline: ["INGEST", "EXTRACT", "CLASSIFY", "NORMALIZE", "CHECK", "GROUND", "RENDER", "RECORD"],
     documentEngine: {
       packetIdentity: "sha256-exact-bytes",
       nativePdfTextFirst: true,
-      scanPath: "full-pdf visual extraction into evidence ledger when native text is insufficient",
+      scanPath: "page-isolated native extraction -> targeted OCR -> page vision; unresolved pages remain explicit and do not erase readable neighbors",
+      unreadablePagePolicy: "manual-review/cannot-confirm, never substantive fail by unreadability alone",
+      wholePdfVisionPolicy: "only when the PDF cannot be page-inventoried at all",
       extractionBeforeChecking: true,
       immutableEvidenceIds: true,
       nativeQuotePageVerification: true,
@@ -73,6 +79,8 @@ export async function GET() {
       tenantScopedMatterHistory: true,
       persistentExaminerDecisions: true,
       durableBatchManifests: true,
+      persistedEvidenceDossier: true,
+      askVeraEvidenceChat: true,
     },
     supportedSearchTypes: [AUTO_DETECT_SEARCH_TYPE, ...SEARCH_TYPES],
     stateSelection: "auto-detect from packet; API supports explicit examiner override",
@@ -89,11 +97,12 @@ export async function POST(request: NextRequest) {
     const access = checkExaminerAccess(request);
     if (!access.ok) return NextResponse.json({ code: "AUTH_REQUIRED", error: access.error, retryable: false }, { status: access.status });
 
+    const instance = clientInstanceConfig();
     const contentType = request.headers.get("content-type") || "";
     let file: File;
     let state = AUTO_DETECT_STATE;
     let searchType = AUTO_DETECT_SEARCH_TYPE;
-    let clientName = "McCalla";
+    let clientName = instance.clientName;
 
     if (contentType.includes("multipart/form-data")) {
       const form = await request.formData();
@@ -103,7 +112,7 @@ export async function POST(request: NextRequest) {
       file = files[0];
       state = String(form.get("state") || AUTO_DETECT_STATE);
       searchType = String(form.get("searchType") || AUTO_DETECT_SEARCH_TYPE);
-      clientName = String(form.get("clientName") || "McCalla");
+      clientName = String(form.get("clientName") || instance.clientName);
     } else if (contentType.includes("application/json")) {
       const body = await request.json() as { blobPathnames?: string[]; state?: string; searchType?: string; clientName?: string };
       if (!body.blobPathnames?.length) return NextResponse.json({ code: "NO_FILE", error: "Provide one private title-report upload pathname." }, { status: 400 });
@@ -113,32 +122,33 @@ export async function POST(request: NextRequest) {
       file = files[0];
       state = body.state || AUTO_DETECT_STATE;
       searchType = body.searchType || AUTO_DETECT_SEARCH_TYPE;
-      clientName = body.clientName || "McCalla";
+      clientName = body.clientName || instance.clientName;
     } else {
       return NextResponse.json({ code: "UNSUPPORTED_REQUEST", error: "Upload one PDF packet using multipart/form-data or the private Blob path." }, { status: 415 });
     }
 
-    const execution = await reviewFile(file, { state, searchType, clientName });
+    const scope = assertClientScope(clientName);
+    const execution = await reviewFile(file, { state, searchType, clientName: scope.clientName });
     return NextResponse.json({
       review: execution.review,
       diagnostics: execution.diagnostics,
       count: 1,
-      engine: CANONICAL_TITLE_ENGINE_VERSION,
+      engine: UNIFIED_TITLE_ENGINE_VERSION,
       ruleVersion: AUDIT_RULE_VERSION,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Title QC failed.";
     const providerFailure = classifyOpenAIProviderFailure(message);
     if (providerFailure) {
-      console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ engine: CANONICAL_TITLE_ENGINE_VERSION, code: providerFailure.code, message: message.slice(0, 600) }));
+      console.warn("CYBRID_TITLE_PROVIDER_ERROR", JSON.stringify({ engine: UNIFIED_TITLE_ENGINE_VERSION, code: providerFailure.code, message: message.slice(0, 600) }));
       return NextResponse.json(providerFailure, { status: providerFailure.status });
     }
-    const input = /^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET):/.test(message);
+    const input = /^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):/.test(message);
     return NextResponse.json({
       code: input ? message.split(":", 1)[0] : "REVIEW_FAILED",
-      error: message.replace(/^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET):\s*/, ""),
+      error: message.replace(/^(CANONICAL_PDF_REQUIRED|EMPTY_PACKET|CLIENT_INSTANCE_NOT_CONFIGURED|CLIENT_SCOPE_MISMATCH):\s*/, ""),
       retryable: !input,
-      engine: CANONICAL_TITLE_ENGINE_VERSION,
+      engine: UNIFIED_TITLE_ENGINE_VERSION,
     }, { status: input ? 400 : 500 });
   } finally {
     await deletePrivateBlobs(cleanupPathnames);
