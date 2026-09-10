@@ -1,3 +1,5 @@
+import { projectReviewedResult, releaseWarnings } from "../lib/review-release";
+import { POST as exportRoute } from "../app/api/review-exports/route";
 import assert from "node:assert/strict";
 import { checkExaminerAccess, testingAccessBypassEnabled } from "../lib/examiner-auth";
 import { assertUploadPaths, issueUploadPath } from "../lib/upload-paths";
@@ -31,6 +33,8 @@ async function main() {
     delete process.env.VERA_ENABLE_ACCEPTANCE_ROUTE;
     assert.equal((await acceptance(new Request("http://localhost"))).status, 404); count++;
     assert.equal((await accessRoute(new Request("http://localhost"))).status, 401); count++;
+    assert.equal((await exportRoute(new Request("http://localhost", { method: "POST" }))).status, 401); count++;
+    assert.equal((await exportRoute(new Request("http://localhost", { method: "POST", headers: { "x-examiner-access-code": process.env.EXAMINER_ACCESS_CODE! }, body: JSON.stringify({ reviewIds: [], format: "csv", columns: [], report: { qcStatus: "PASS" } }) }))).status, 400); count++;
     process.env.BLOB_READ_WRITE_TOKEN = "test-only-signing-key";
     process.env.VERA_CLIENT_ID = "client-a";
     const path = issueUploadPath("a sample.pdf");
@@ -54,6 +58,16 @@ async function main() {
     const corrected = applyReviewDecisions(guarded, [{ reviewId: "test", checkId: check.id, decision: "CORRECT", correctedStatus: "PASS", reason: "Reviewed owner", actor: "test", decidedAt: "2026-09-10" }]);
     test("individual correction cannot erase integrity hold", () => assert.equal(corrected.qc.qcStatus, "REVIEW"));
     test("integrity hold survives report projection", () => assert.equal(veraPassFailReason(corrected.qc).status, "Needs review"));
+    guarded.record.reviewId = "review-a";
+    guarded.qc.checks[0].label = "Owner";
+    const ownDecision: any = { reviewId: "review-a", checkId: check.id, decision: "CORRECT", correctedStatus: "PASS", reason: "Examined", actor: "test", decidedAt: "2026-09-10" };
+    test("foreign review decision cannot alter result", () => assert.equal(projectReviewedResult(guarded, [{ ...ownDecision, reviewId: "review-b" }]).qc.checks[0].status, "CANNOT_CONFIRM"));
+    test("unreviewed exception blocks release", () => assert.ok(releaseWarnings(guarded, []).some((warning) => warning.includes("disposition"))));
+    test("corrections cannot authorize unreadable packet export", () => assert.ok(releaseWarnings(projectReviewedResult(guarded, [ownDecision]), [ownDecision]).some((warning) => warning.includes("physical pages"))));
+    const clean: any = { ...guarded, qc: { ...guarded.qc, curativeIssues: [], checks: [{ ...guarded.qc.checks[0], status: "PASS", legacyQuestionNumber: 1 }] } };
+    test("passing Vera question still requires review", () => assert.equal(releaseWarnings(clean, []).length, 1));
+    test("foreign decision cannot satisfy release gate", () => assert.equal(releaseWarnings(clean, [{ ...ownDecision, reviewId: "review-b" }]).length, 1));
+    test("reviewed readable packet eligible for export", () => assert.deepEqual(releaseWarnings(clean, [ownDecision]), []));
     console.log(`security-correctness-harness: ${count} passed`);
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

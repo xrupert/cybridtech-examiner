@@ -9,8 +9,6 @@ import {
   AVAILABLE_EXPORT_COLUMNS,
   MCCALLA_EXPORT_PROFILE,
   createExportProfile,
-  renderCsv,
-  renderJson,
   validateExportProfile,
   type ExportColumn,
 } from "@/lib/export-profiles";
@@ -263,6 +261,7 @@ function ExaminerWorkbench() {
     if (!rows.length) return [];
     const warnings = [...validateExportProfile(exportProfile("csv"), rows)];
     for (const item of completeItems) {
+      if (item.review?.qc.curativeIssues.some((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW")) warnings.push(`${item.fileName}: unresolved physical pages prevent final release.`);
       const veraPending = pendingVera(item); const supplementalPending = pendingSupplemental(item);
       if (veraPending.length) warnings.push(`${item.fileName}: examiner disposition required for ${veraPending.map((check) => `Q${check.legacyQuestionNumber} ${check.label}`).join("; ")}.`);
       if (supplementalPending.length) warnings.push(`${item.fileName}: supplemental review required — ${supplementalPending.map((check) => `${check.label}: ${check.summary}`).join("; ")}.`);
@@ -271,14 +270,22 @@ function ExaminerWorkbench() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, selectedColumns, completeItems, decisions, clientName, availableColumns]);
 
-  function exportCsv() { if (!rows.length || exportWarnings.length) return; downloadText(`${safeName(clientName)}-title-qc.csv`, renderCsv(exportProfile("csv"), rows), "text/csv;charset=utf-8"); }
-  function exportJson() { if (!rows.length || exportWarnings.length) return; downloadText(`${safeName(clientName)}-title-qc.json`, renderJson(exportProfile("json"), rows), "application/json;charset=utf-8"); }
+  async function downloadReviewedExport(format: "csv" | "json") {
+    if (!rows.length || exportWarnings.length) return;
+    try {
+      const response = await examinerFetch("/api/review-exports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewIds: completeItems.map((item) => item.review!.record.reviewId), columns: selectedColumns, format }) });
+      if (!response.ok) throw new Error((await response.json()).error || "Export could not be released.");
+      downloadText(`${safeName(clientName)}-title-qc.${format}`, await response.text(), format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8");
+    } catch (error) { setError(error instanceof Error ? error.message : "Export failed."); }
+  }
+  function exportCsv() { return downloadReviewedExport("csv"); }
+  function exportJson() { return downloadReviewedExport("json"); }
   const modelStatus = readiness?.openAIConfigured ? `${readiness.extractionModel || "extraction model"} → ${readiness.checkModel || "check model"}` : readiness ? "AI not configured" : "Checking system…";
 
   const selectedVera = veraChecks(selected?.review);
   const selectedSupplemental = supplementalChecks(selected?.review);
   const selectedVeraReviewed = selected ? selectedVera.filter((check) => decisionFor(selected, check.id)).length : 0;
-  const selectedReviewComplete = selected ? pendingVera(selected).length === 0 && pendingSupplemental(selected).length === 0 : false;
+  const selectedReviewComplete = selected ? pendingVera(selected).length === 0 && pendingSupplemental(selected).length === 0 && !selected.review?.qc.curativeIssues.some((issue) => issue.code === "DOCUMENT_INTEGRITY_MANUAL_REVIEW") : false;
 
   return <div className={styles.shell}>
     <header className={styles.nav}><div className={styles.brand}><Logo height={40} /><span className={styles.brandName}>Cybrid Title</span></div><span className={styles.navTag}>Title Examination · Vera 20 · Evidence Reconciliation · Curative</span></header>
