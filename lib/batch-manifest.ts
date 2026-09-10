@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { get, put } from "@vercel/blob";
+import { assertClientScope, clientBlobPrefix } from "./client-instance";
 
 export type BatchItemStatus = "QUEUED" | "PROCESSING" | "COMPLETE" | "ERROR";
 
@@ -23,10 +24,8 @@ export interface BatchManifest {
   items: BatchManifestItem[];
 }
 
-const PREFIX = "cybrid-title/batches-v1";
-
 function path(batchId: string): string {
-  return `${PREFIX}/${encodeURIComponent(batchId)}.json`;
+  return `${clientBlobPrefix("batches-v1")}/${encodeURIComponent(batchId)}.json`;
 }
 
 async function persist(manifest: BatchManifest): Promise<void> {
@@ -40,11 +39,12 @@ async function persist(manifest: BatchManifest): Promise<void> {
 }
 
 export async function createBatchManifest(clientName: string, sourceFiles: string[], exportProfileId = "ncala-demo-v1"): Promise<BatchManifest> {
+  const scope = assertClientScope(clientName);
   const now = new Date().toISOString();
   const manifest: BatchManifest = {
     version: 1,
     batchId: randomUUID(),
-    clientName: clientName.trim() || "Client",
+    clientName: scope.complianceMode ? scope.clientName : (clientName.trim() || "Client"),
     exportProfileId,
     createdAt: now,
     updatedAt: now,
@@ -60,7 +60,9 @@ export async function loadBatchManifest(batchId: string): Promise<BatchManifest 
     const result = await get(path(batchId), { access: "private" });
     if (!result || result.statusCode !== 200 || !result.stream) return null;
     const parsed = await new Response(result.stream).json() as BatchManifest;
-    return parsed?.version === 1 && parsed.batchId === batchId ? parsed : null;
+    if (parsed?.version !== 1 || parsed.batchId !== batchId) return null;
+    assertClientScope(parsed.clientName);
+    return parsed;
   } catch {
     return null;
   }
@@ -68,7 +70,7 @@ export async function loadBatchManifest(batchId: string): Promise<BatchManifest 
 
 export async function updateBatchItem(batchId: string, itemId: string, patch: Partial<Omit<BatchManifestItem, "itemId" | "sourceFile">>): Promise<BatchManifest> {
   const manifest = await loadBatchManifest(batchId);
-  if (!manifest) throw new Error("Batch manifest was not found.");
+  if (!manifest) throw new Error("Batch manifest was not found in this client instance.");
   const now = new Date().toISOString();
   const items = manifest.items.map((item) => item.itemId === itemId ? { ...item, ...patch, updatedAt: now } : item);
   if (!items.some((item) => item.itemId === itemId)) throw new Error("Batch item was not found.");
